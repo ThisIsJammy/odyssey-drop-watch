@@ -4,18 +4,23 @@ and push a phone alert via ntfy when something appears.
 Runs on a GitHub Actions schedule (see .github/workflows/watch.yml).
 State persists as state.json, committed back to the repo after each change.
 The ntfy topic name comes from the NTFY_TOPIC repo secret.
+
+Parsing note: the drop70mm page is a streamed Next.js/RSC response whose venue
+sections arrive in NON-DETERMINISTIC ORDER, so we must not infer venue from
+text position. Instead we bracket-match the embedded "sections":[...] JSON
+array and read each section's venue.shortName directly.
 """
 import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from datetime import datetime, timezone
 
 PAGE = "https://drop70mm.com/movie/e7b76748-c975-4aaf-ba4e-9c65dee2057a"
 STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 TOPIC = os.environ.get("NTFY_TOPIC", "")
-THEATERS = ["Lincoln Square", "CityWalk", "Metreon"]
 ALERT_THEATER = "Lincoln Square"
 
 def notify(title, body, priority="urgent"):
@@ -27,31 +32,55 @@ def notify(title, body, priority="urgent"):
         method="POST")
     urllib.request.urlopen(req, timeout=15)
 
-def fetch_calendar():
-    """Return {theater: {"dateLabel|timeLabel": showtime_id}} parsed from the page."""
-    req = urllib.request.Request(PAGE, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode(errors="replace")
+def parse_calendar(raw):
+    """Return {venue_shortName: {"dateLabel|timeLabel": showtime_id}}."""
     text = raw.replace('\\"', '"')
-    marks = sorted((m.start(), t) for t in THEATERS
-                   for m in [next(re.finditer(re.escape(t), text), None)] if m)
-    if not marks:
-        raise RuntimeError("no theater names found - page layout changed")
-    cal = {t: {} for _, t in marks}
-    block_re = re.compile(r'"dateLabel":"([^"]+)","showtimes":\[(.*?)\]\}')
-    item_re = re.compile(r'"timeLabel":"([^"]+)","ticketUrl":"https://www\.amctheatres\.com/showtimes/(\d+)/seats"')
-    for bm in block_re.finditer(text):
-        theater = None
-        for pos, t in marks:
-            if pos < bm.start():
-                theater = t
-        if theater is None:
-            continue
-        for tm in item_re.finditer(bm.group(2)):
-            cal[theater][f"{bm.group(1)}|{tm.group(1)}"] = tm.group(2)
+    key = '"sections":['
+    i = text.find(key)
+    if i < 0:
+        raise RuntimeError("sections array not found in page")
+    start = i + len(key) - 1  # position of the opening [
+    depth, end = 0, None
+    for j in range(start, min(len(text), start + 2_000_000)):
+        c = text[j]
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                end = j + 1
+                break
+    if end is None:
+        raise RuntimeError("sections array unterminated")
+    sections = json.loads(text[start:end])
+    cal = {}
+    for sec in sections:
+        name = (sec.get("venue") or {}).get("shortName", "?")
+        d = cal.setdefault(name, {})
+        for g in sec.get("groups", []):
+            dl = g.get("dateLabel", "?")
+            for st in g.get("showtimes", []):
+                m = re.search(r"showtimes/(\d+)/seats", st.get("ticketUrl") or "")
+                if m:
+                    d[f"{dl}|{st.get('timeLabel', '?')}"] = m.group(1)
     if len(cal.get(ALERT_THEATER, {})) < 4:
-        raise RuntimeError(f"parse suspiciously small for {ALERT_THEATER}")
+        counts = {k: len(v) for k, v in cal.items()}
+        raise RuntimeError(f"parse suspiciously small for {ALERT_THEATER}: {counts}")
     return cal
+
+def fetch_calendar():
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(PAGE, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read().decode(errors="replace")
+            return parse_calendar(raw)
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(20)
+    raise last_err
 
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
