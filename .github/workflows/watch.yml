@@ -1,5 +1,15 @@
 name: watch
 
+# Watches AMC Lincoln Square's Odyssey IMAX 70mm calendar for NEW showtimes
+# (Sep 14/15 fill-ins, any Sep 17+ extension, new 2 AM overnight slots).
+#
+# CADENCE: a one-check-per-run design only managed a ~40 min median gap (24-66
+# min observed) because GitHub throttles */5 schedules on low-traffic repos.
+# So each run is now a long-lived poller: a check every 5 minutes for up to
+# 5h50m (just under GitHub's 6h job ceiling). The */5 schedule keeps firing
+# during a run and the concurrency group parks one firing as a PENDING run,
+# which starts the moment the current one ends - chaining runs with no gap.
+
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -12,21 +22,32 @@ concurrency:
   group: watch
   cancel-in-progress: false
 
+env:
+  POLL_SECONDS: "300"
+  MAX_POLLS: "70"          # 70 x 5 min = 5h50m
+
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run watcher
+      - name: Poll every 5 minutes
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python3 watcher.py
-
-      - name: Persist state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || (git commit -m "update state [skip ci]" && git pull --rebase && git push)
+          for i in $(seq 1 "$MAX_POLLS"); do
+            echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
+            python3 watcher.py || true
+            # push state after every poll so a killed run never loses what it saw
+            if ! git diff --quiet state.json 2>/dev/null; then
+              git add state.json
+              git commit -q -m "update state [skip ci]" || true
+              git pull -q --rebase || true
+              git push -q || true
+            fi
+            [ "$i" -lt "$MAX_POLLS" ] && sleep "$POLL_SECONDS"
+          done
