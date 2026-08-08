@@ -1,0 +1,28 @@
+{
+  "_comment": "BookMyShow white-label monitor config. See bms_monitor.py header for how the codes were discovered and for the SeatsAvailable=capacity trap. To watch a different BMS white-label cinema: open its site, find the cinemas.bookmyshow.com iframe domain, and read companyCode/subregionCode from the page's __NEXT_DATA__ runtimeConfig.websiteConfigurations.",
+  "_screen_note": "Prasads: SCREEN 6 = PCX (629 seats, the big one). SCREEN 4 = HDR by Barco (390). screen_match is a case-insensitive substring of ScreenName.",
+  "venue_name": "Prasads Hyderabad",
+  "domain": "www.prasadz.com",
+  "company_code": "PRSD",
+  "subregion_code": "HYD",
+  "venue_code": "PRHN",
+  "movie_match": "The Odyssey",
+  "screen_match": "screen 6",
+  "showtime_match": "",
+  "dates": [
+    "20260809"
+  ],
+  "low_seat_alert": 20,
+  "interval_sec": 60,
+  "ntfy_topic": "",
+  "watch_rows": [
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N"
+  ],
+  "alert_on_watched_rows_only": false,
+  "_rows_note": "PCX Screen 6 rows run A (front, nearest screen) to N (rear). watch_rows are the ones you actually want; a seat opening there fires an urgent push naming the exact seat numbers."
+}

@@ -1,0 +1,41 @@
+name: bms-seat-watch
+
+# Watches Prasads Hyderabad PCX (Screen 6) for The Odyssey and alerts when a
+# seat opens in the watched rows. Runs on GitHub's servers, so it keeps going
+# with the laptop off. Each run polls several times to beat the schedule
+# throttling GitHub applies to */5 crons.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bms
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll repeatedly for ~10 minutes
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_PRASADS }}
+        run: |
+          for i in $(seq 1 10); do
+            python3 bms_monitor.py || true
+            [ "$i" -lt 10 ] && sleep 55
+          done
+
+      - name: Persist state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bms_state.json
+          git diff --cached --quiet || (git commit -m "bms state [skip ci]" && git pull --rebase && git push)
