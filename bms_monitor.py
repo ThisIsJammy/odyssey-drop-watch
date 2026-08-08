@@ -79,17 +79,24 @@ def log(msg):
 
 
 def push(title, body, priority="urgent", tags="ticket,bell,star"):
-    try:
-        title = title.encode("ascii", "ignore").decode().strip() or "Seat alert"
-        req = urllib.request.Request(
-            f"https://ntfy.sh/{TOPIC}", data=body.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": tags,
-                     "Click": f"https://in.bookmyshow.com/cinemas/hyderabad/"
-                              f"prasads-multiplex-hyderabad/buytickets/{VC}/{DATES[0]}"},
-            method="POST")
-        urllib.request.urlopen(req, timeout=15)
-    except Exception as e:
-        log(f"push failed: {e}")
+    """Publish to every configured topic. Sending to more than one is
+    deliberate: an alert that fires but lands on a topic the phone is not
+    subscribed to is indistinguishable from no alert at all (happened
+    2026-08-08 - six row-open alerts published, none delivered)."""
+    topics = [t for t in ([TOPIC] + CFG.get("also_topics", [])) if t]
+    for topic in topics:
+        try:
+            title_h = title.encode("ascii", "ignore").decode().strip() or "Seat alert"
+            req = urllib.request.Request(
+                f"https://ntfy.sh/{topic}", data=body.encode("utf-8"),
+                headers={"Title": title_h, "Priority": priority, "Tags": tags,
+                         "Click": "https://in.bookmyshow.com/cinemas/hyderabad/"
+                                  f"prasads-multiplex-hyderabad/buytickets/{VC}/"
+                                  f"{DATES[0] if DATES and DATES[0] != 'auto' else ''}"},
+                method="POST")
+            urllib.request.urlopen(req, timeout=15)
+        except Exception as e:
+            log(f"push to {topic} failed: {e}")
 
 
 def api(params):
