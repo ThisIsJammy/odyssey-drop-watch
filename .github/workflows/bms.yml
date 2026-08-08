@@ -30,7 +30,7 @@ concurrency:
 
 env:
   # booking closes 07:50 IST on 2026-08-09 (15 min before the 08:05 show)
-  CUTOFF_UTC: "2026-08-09T02:20:00Z"
+  CUTOFF_UTC: "2026-08-16T04:00:00Z"
   POLL_SECONDS: "300"
   MAX_POLLS: "70"          # 70 x 5 min = 5h50m
 

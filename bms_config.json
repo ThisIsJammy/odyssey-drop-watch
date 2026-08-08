@@ -10,7 +10,7 @@
   "screen_match": "screen 6",
   "showtime_match": "",
   "dates": [
-    "20260809"
+    "auto"
   ],
   "low_seat_alert": 20,
   "interval_sec": 60,
@@ -24,5 +24,6 @@
     "N"
   ],
   "alert_on_watched_rows_only": false,
-  "_rows_note": "PCX Screen 6 rows run A (front, nearest screen) to N (rear). watch_rows are the ones you actually want; a seat opening there fires an urgent push naming the exact seat numbers."
+  "_rows_note": "PCX Screen 6 rows run A (front, nearest screen) to N (rear). watch_rows are the ones you actually want; a seat opening there fires an urgent push naming the exact seat numbers.",
+  "_dates_note": "auto = discover every date BMS lists (IBVGETSHOWDATESBYEVENT). A brand-new date on sale fires an urgent push. Hard-coding a single date is what made us miss the Aug 10-16 release."
 }

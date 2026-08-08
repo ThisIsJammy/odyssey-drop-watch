@@ -59,7 +59,8 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 DOMAIN = CFG["domain"]
 CC, SR, VC = CFG["company_code"], CFG["subregion_code"], CFG["venue_code"]
 TOPIC = os.environ.get("NTFY_TOPIC") or CFG["ntfy_topic"]
-DATES = CFG["dates"]
+DATES = CFG["dates"]            # [] or ["auto"] => discover every listed date
+AUTO_DATES = (not DATES) or DATES == ["auto"]
 MOVIE_MATCH = CFG["movie_match"].lower()
 SCREEN_MATCH = (CFG.get("screen_match") or "").lower()
 TIME_MATCH = CFG.get("showtime_match") or ""
@@ -185,11 +186,22 @@ def seatmap(session_id):
             time.sleep(5)
 
 
+def dates_for(event_code):
+    """Every date BMS currently lists for this movie (so newly opened dates
+    are picked up automatically - not watching for these was how the Aug 10-16
+    release slipped through silently)."""
+    if not AUTO_DATES:
+        return DATES
+    d = api({"cmd": "IBVGETSHOWDATESBYEVENT", "cc": CC, "sr": SR, "ec": event_code})
+    return sorted({x.get("ShowDateCode") for x in
+                   (d["BookMyShow"].get("arrShowDates") or []) if x.get("ShowDateCode")})
+
+
 def shows():
     """All matching shows -> {key: record}. Retries transient failures."""
     found = {}
     for ec, title in events():
-        for dc in DATES:
+        for dc in dates_for(ec):
             for attempt in range(3):
                 try:
                     d = api({"cmd": "IBVGETSHOWTIMESBYEVENT", "cc": CC, "sr": SR,
@@ -255,8 +267,14 @@ def poll():
     for k, r in cur.items():
         prev = old.get(k)
         if prev is None:
-            if old:  # not the first-ever run -> genuinely new showtime
-                alerts.append(("urgent", f"NEW SHOW: {describe(r)} - {r['seats']} seats"))
+            if old:  # not the first-ever run -> genuinely new date/showtime
+                new_date = r["date"] not in {v.get("date") for v in old.values()}
+                w = r.get("watched_rows", {})
+                rowbit = ("\n" + "; ".join(f"ROW {k}: {', '.join(v[:12])}" for k, v in w.items())
+                          if w else "\n(watched rows all booked)")
+                alerts.append(("urgent",
+                               f"{'*** NEW DATE ON SALE ***' if new_date else 'NEW SHOWTIME:'} "
+                               f"{describe(r)}{rowbit}"))
             continue
         # --- watched rows: the seats you actually want ---
         if WATCH_ROWS:
