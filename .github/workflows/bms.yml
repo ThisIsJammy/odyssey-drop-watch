@@ -2,8 +2,13 @@ name: bms-seat-watch
 
 # Watches Prasads Hyderabad PCX (Screen 6) for The Odyssey and alerts when a
 # seat opens in the watched rows. Runs on GitHub's servers, so it keeps going
-# with the laptop off. Each run polls several times to beat the schedule
-# throttling GitHub applies to */5 crons.
+# with the laptop off.
+#
+# COVERAGE DESIGN: GitHub throttles */5 schedules hard (measured median ~46 min
+# between starts on this repo, worst case 134 min). So instead of one check per
+# run, each run POLLS EVERY 5 MINUTES FOR ~50 MINUTES. Consecutive runs then
+# overlap/chain into effectively continuous 5-minute coverage, and the
+# concurrency group keeps exactly one poller alive at a time.
 
 on:
   schedule:
@@ -20,22 +25,25 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 
-      - name: Poll repeatedly for ~10 minutes
+      - name: Poll every 5 minutes for ~50 minutes
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_PRASADS }}
         run: |
-          for i in $(seq 1 10); do
+          for i in $(seq 1 11); do
+            echo "--- poll $i/11 at $(date -u '+%H:%M:%S UTC') ---"
             python3 bms_monitor.py || true
-            [ "$i" -lt 10 ] && sleep 55
+            # commit state as we go so a killed run doesn't lose what it saw
+            if ! git diff --quiet bms_state.json 2>/dev/null; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add bms_state.json
+              git commit -q -m "bms state [skip ci]" || true
+              git pull -q --rebase || true
+              git push -q || true
+            fi
+            [ "$i" -lt 11 ] && sleep 300
           done
-
-      - name: Persist state
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bms_state.json
-          git diff --cached --quiet || (git commit -m "bms state [skip ci]" && git pull --rebase && git push)
