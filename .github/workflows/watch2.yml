@@ -28,6 +28,8 @@ concurrency:
 
 env:
   POLL_SECONDS: "300"
+  NAG_MINUTES: "15"     # a drop re-alerts every minute for 15 min
+  NAG_INTERVAL: "60"
   START_OFFSET: "100"
   STATE_FILE: "state2.json"
   MAX_POLLS: "70"          # 70 x 5 min = 5h50m
@@ -42,6 +44,8 @@ jobs:
       - name: Poll every 5 minutes
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NAG_MINUTES: ${{ env.NAG_MINUTES }}
+          NAG_INTERVAL: ${{ env.NAG_INTERVAL }}
         run: |
           # stagger against the other pollers so checks land ~100s apart
           sleep "$START_OFFSET"

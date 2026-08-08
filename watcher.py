@@ -10,6 +10,7 @@ sections arrive in NON-DETERMINISTIC ORDER, so we must not infer venue from
 text position. Instead we bracket-match the embedded "sections":[...] JSON
 array and read each section's venue.shortName directly.
 """
+import hashlib
 import json
 import os
 import re
@@ -25,6 +26,10 @@ STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      os.environ.get("STATE_FILE", "state.json"))
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 ALERT_THEATER = "Lincoln Square"
+# a real drop repeats the alert once a minute for this long, so it cannot be
+# slept through; NAG_MINUTES=0 disables it
+NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "15"))
+NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 
 def notify(title, body, priority="urgent"):
     req = urllib.request.Request(
@@ -34,6 +39,50 @@ def notify(title, body, priority="urgent"):
                  "Click": PAGE},
         method="POST")
     urllib.request.urlopen(req, timeout=15)
+
+
+def _nag_already_running(sig):
+    """True if another poller already started the repeat-alarm for this drop.
+    Three pollers watch the same calendar; without this each would start its
+    own 15-minute alarm (45 notifications for one drop)."""
+    try:
+        url = f"https://ntfy.sh/{TOPIC}/json?poll=1&since={NAG_MINUTES + 5}m"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            for line in r.read().decode().splitlines():
+                if line.strip() and sig in line:
+                    return True
+    except Exception as e:
+        print(f"nag dedupe check failed ({e}) - alerting anyway")
+    return False
+
+
+def alarm(title, body):
+    """Push now, then repeat every NAG_INTERVAL for NAG_MINUTES.
+
+    The repeats run INLINE (blocking), not on a background thread: each poll is
+    a short-lived process and a daemon thread dies the moment it exits, which
+    silently swallowed every repeat in testing. Blocking costs this poller a
+    few polls; the other two pollers keep watching in the meantime, and the
+    dedupe check above means only one poller ever blocks.""" 
+    sig = "[drop:" + hashlib.sha1(body.encode()).hexdigest()[:8] + "]"
+    if _nag_already_running(sig):
+        print(f"repeat-alarm already running elsewhere for {sig} - single push only")
+        notify(title, body)
+        return
+    reps = max(1, (NAG_MINUTES * 60) // NAG_INTERVAL) if NAG_MINUTES else 1
+    notify(title, f"{body}\n{sig} alert 1/{reps}")
+
+    for n in range(2, reps + 1):
+        time.sleep(NAG_INTERVAL)
+        try:
+            notify(f"STILL OPEN? {title}",
+                   f"{body}\n{sig} alert {n}/{reps} - repeating for "
+                   f"{NAG_MINUTES} min so you cannot miss it")
+        except Exception as e:
+            print(f"repeat alert {n} failed: {e}")
+            return
+    print(f"repeat-alarm finished: {reps} alerts over {NAG_MINUTES} min")
 
 def parse_calendar(raw):
     """Return {venue_shortName: {"dateLabel|timeLabel": showtime_id}}."""
@@ -120,8 +169,8 @@ def main():
         for k in sorted(ls_new):
             _, date_label, time_label = k.split("|")
             lines.append(f"{date_label} {time_label} -> amctheatres.com/showtimes/{flat[k]}/seats")
-        notify(f"LINCOLN SQUARE DROP: {len(ls_new)} new showtime(s)!",
-               "\n".join(lines) + "\n\nBUY NOW - 80% sells in the first hour.")
+        alarm(f"LINCOLN SQUARE DROP: {len(ls_new)} new showtime(s)!",
+              "\n".join(lines) + "\n\nBUY NOW - 80% sells in the first hour.")
         print(f"[{now}] ALERT sent: {ls_new}")
     other_new = [k for k in new_keys if not k.startswith(ALERT_THEATER)]
     if other_new:
