@@ -57,5 +57,5 @@ jobs:
               git pull -q --rebase || true
               git push -q || true
             fi
-            [ "$i" -lt "$MAX_POLLS" ] && sleep "$POLL_SECONDS"
+            if [ "$i" -lt "$MAX_POLLS" ]; then sleep "$POLL_SECONDS"; fi
           done
