@@ -26,8 +26,6 @@
   "alert_on_watched_rows_only": false,
   "_rows_note": "PCX Screen 6 rows run A (front, nearest screen) to N (rear). watch_rows are the ones you actually want; a seat opening there fires an urgent push naming the exact seat numbers.",
   "_dates_note": "auto = discover every date BMS lists (IBVGETSHOWDATESBYEVENT). A brand-new date on sale fires an urgent push. Hard-coding a single date is what made us miss the Aug 10-16 release.",
-  "also_topics": [
-    "odyssey_lincoln_drops_ak2026"
-  ],
-  "_topics_note": "Alerts publish to ntfy_topic AND every also_topics entry. odyssey_lincoln_drops_ak2026 is the topic the phone is confirmed subscribed to, so Prasads alerts land even if odyssey_prasads_ak2026 was never re-added."
+  "also_topics": [],
+  "_topics_note": "Alerts publish to ntfy_topic plus any also_topics entries. Kept empty: phone is subscribed to odyssey_prasads_ak2026 (confirmed 2026-08-08). Add a second topic here only as a delivery fallback."
 }
