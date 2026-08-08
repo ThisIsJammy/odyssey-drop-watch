@@ -1,9 +1,9 @@
-name: watch
+name: watch-3
 
 # Watches AMC Lincoln Square's Odyssey IMAX 70mm calendar for NEW showtimes
 # (Sep 14/15 fill-ins, any Sep 17+ extension, new 2 AM overnight slots).
 #
-# POLLER 1 of 3 - staggered 0s against the others, so the three
+# POLLER 3 of 3 - staggered 200s against the others, so the three
 # together check about every 100s and one is always mid-run when another
 # hits GitHub's 6h job ceiling.
 #
@@ -23,13 +23,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: watch
+  group: watch3
   cancel-in-progress: false
 
 env:
   POLL_SECONDS: "300"
-  START_OFFSET: "0"
-  STATE_FILE: "state.json"
+  START_OFFSET: "200"
+  STATE_FILE: "state3.json"
   MAX_POLLS: "70"          # 70 x 5 min = 5h50m
 
 jobs:

@@ -19,7 +19,10 @@ import urllib.request
 from datetime import datetime, timezone
 
 PAGE = "https://drop70mm.com/movie/e7b76748-c975-4aaf-ba4e-9c65dee2057a"
-STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
+# each parallel poller keeps its own state file so concurrent runs never
+# collide on git push (STATE_FILE is set per workflow)
+STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     os.environ.get("STATE_FILE", "state.json"))
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 ALERT_THEATER = "Lincoln Square"
 
