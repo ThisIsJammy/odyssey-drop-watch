@@ -26,6 +26,11 @@ STATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      os.environ.get("STATE_FILE", "state.json"))
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 ALERT_THEATER = "Lincoln Square"
+# showtimes whose ticket availability we track (sold-out -> on-sale flips).
+# NOTE: this status comes from the tracker, not AMC, and has been observed to
+# lag reality - alerts say "verify on AMC" for that reason.
+SEAT_WATCH = [d.strip() for d in os.environ.get("SEAT_WATCH", "Sep 16").split(",") if d.strip()]
+STATUS = {}
 # a real drop repeats the alert once a minute for this long, so it cannot be
 # slept through; NAG_MINUTES=0 disables it
 NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "15"))
@@ -105,6 +110,7 @@ def parse_calendar(raw):
     if end is None:
         raise RuntimeError("sections array unterminated")
     sections = json.loads(text[start:end])
+    STATUS.clear()
     cal = {}
     for sec in sections:
         name = (sec.get("venue") or {}).get("shortName", "?")
@@ -114,7 +120,9 @@ def parse_calendar(raw):
             for st in g.get("showtimes", []):
                 m = re.search(r"showtimes/(\d+)/seats", st.get("ticketUrl") or "")
                 if m:
-                    d[f"{dl}|{st.get('timeLabel', '?')}"] = m.group(1)
+                    key = f"{dl}|{st.get('timeLabel', '?')}"
+                    d[key] = m.group(1)
+                    STATUS[f"{name}|{key}"] = st.get("availabilityStatus")
     if len(cal.get(ALERT_THEATER, {})) < 4:
         counts = {k: len(v) for k, v in cal.items()}
         raise RuntimeError(f"parse suspiciously small for {ALERT_THEATER}: {counts}")
@@ -150,6 +158,9 @@ def main():
         print(f"[{now}] fetch/parse failed: {e}", file=sys.stderr)
         sys.exit(1)
     flat = {f"{t}|{k}": v for t, d in cal.items() for k, v in d.items()}
+    # availability snapshot for the showtimes we're seat-watching
+    seat_now = {k: STATUS.get(k) for k in flat
+                if k.startswith(ALERT_THEATER) and any(d in k for d in SEAT_WATCH)}
     old = None
     try:
         with open(STATE) as f:
@@ -158,6 +169,26 @@ def main():
         pass
     with open(STATE, "w") as f:
         json.dump(flat, f, indent=1, sort_keys=True)
+    seat_path = STATE.replace(".json", "_seats.json")
+    seat_prev = {}
+    if os.path.exists(seat_path):
+        try:
+            seat_prev = json.load(open(seat_path))
+        except json.JSONDecodeError:
+            pass
+    with open(seat_path, "w") as f:
+        json.dump(seat_now, f, indent=1, sort_keys=True)
+    if seat_prev:
+        opened = [k for k, v in seat_now.items()
+                  if v == "tickets" and seat_prev.get(k) not in (None, "tickets")]
+        if opened:
+            lines = [f"{k.split('|', 1)[1]} -> amctheatres.com/showtimes/{flat[k]}/seats"
+                     for k in sorted(opened)]
+            alarm(f"SEATS MAY HAVE OPENED: {len(opened)} Sep 16 showtime(s)",
+                  "\n".join(lines) +
+                  "\n\nTracker flipped sold-out -> on sale. VERIFY ON AMC - this "
+                  "status has lagged reality before.")
+            print(f"seat-availability alert: {opened}")
     if old is None:
         print(f"[{now}] baseline seeded: "
               + ", ".join(f"{t}={len(d)}" for t, d in cal.items()) + " showtimes. No alert.")
