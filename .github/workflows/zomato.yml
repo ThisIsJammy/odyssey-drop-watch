@@ -1,0 +1,53 @@
+name: zomato-delivery-watch
+
+# Watches Burger King Koregaon Park on Zomato and alerts the moment online
+# delivery opens. Same long-poller shape as the AMC watchers: GitHub throttles
+# */5 schedules badly, so each run polls on its own timer for ~5h50m and the
+# concurrency group parks the next run to start the instant this one ends.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zomato
+  cancel-in-progress: false
+
+env:
+  POLL_SECONDS: "180"      # delivery windows can be short - check every 3 min
+  MAX_POLLS: "116"         # 116 x 3 min = 5h48m
+  NAG_MINUTES: "15"
+  NAG_INTERVAL: "60"
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll Zomato delivery status
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_ZOMATO }}
+          NAG_MINUTES: ${{ env.NAG_MINUTES }}
+          NAG_INTERVAL: ${{ env.NAG_INTERVAL }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for i in $(seq 1 "$MAX_POLLS"); do
+            echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
+            python3 zomato_watcher.py || true
+            # commit the open/close history as it accrues - that log is what
+            # reveals when this restaurant actually opens
+            if ! git diff --quiet zomato_state.json zomato_history.jsonl 2>/dev/null; then
+              git add zomato_state.json zomato_history.jsonl
+              git commit -q -m "zomato status [skip ci]" || true
+              git pull -q --rebase || true
+              git push -q || true
+            fi
+            if [ "$i" -lt "$MAX_POLLS" ]; then sleep "$POLL_SECONDS"; fi
+          done
