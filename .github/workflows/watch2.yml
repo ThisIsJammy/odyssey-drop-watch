@@ -30,6 +30,7 @@ env:
   POLL_SECONDS: "300"
   NAG_MINUTES: "15"     # a drop re-alerts every minute for 15 min
   NAG_INTERVAL: "60"
+  SEAT_WATCH: "Sep 12,Sep 13,Sep 16"   # dates the user could attend
   START_OFFSET: "100"
   STATE_FILE: "state2.json"
   MAX_POLLS: "70"          # 70 x 5 min = 5h50m
@@ -46,17 +47,21 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NAG_MINUTES: ${{ env.NAG_MINUTES }}
           NAG_INTERVAL: ${{ env.NAG_INTERVAL }}
+          SEAT_WATCH: ${{ env.SEAT_WATCH }}
         run: |
-          # stagger against the other pollers so checks land ~100s apart
-          sleep "$START_OFFSET"
+          # align to a fixed slot within each 5-min window so the stagger
+          # survives restarts (ad-hoc restarts had collapsed it, which let two
+          # pollers raise duplicate alarms for the same event)
+          sleep $(( (300 + START_OFFSET - $(date +%s) % 300) % 300 ))
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           for i in $(seq 1 "$MAX_POLLS"); do
             echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
             STATE_FILE="$STATE_FILE" python3 watcher.py || true
             # push state after every poll so a killed run never loses what it saw
-            if ! git diff --quiet "$STATE_FILE" 2>/dev/null; then
-              git add "$STATE_FILE"
+            SEAT_SNAP="${STATE_FILE%.json}_seats.json"
+            if ! git diff --quiet "$STATE_FILE" "$SEAT_SNAP" 2>/dev/null; then
+              git add -- "$STATE_FILE" "$SEAT_SNAP" || true
               git commit -q -m "update state [skip ci]" || true
               git pull -q --rebase || true
               git push -q || true
