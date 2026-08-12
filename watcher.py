@@ -184,7 +184,9 @@ def main():
         if opened:
             lines = [f"{k.split('|', 1)[1]} -> amctheatres.com/showtimes/{flat[k]}/seats"
                      for k in sorted(opened)]
-            alarm(f"SEATS MAY HAVE OPENED: {len(opened)} Sep 16 showtime(s)",
+            dates = sorted({k.split("|")[1] for k in opened})
+            alarm(f"SEATS MAY HAVE OPENED: {', '.join(dates)}"
+                  f" ({len(opened)} showtime(s))",
                   "\n".join(lines) +
                   "\n\nTracker flipped sold-out -> on sale. VERIFY ON AMC - this "
                   "status has lagged reality before.")
