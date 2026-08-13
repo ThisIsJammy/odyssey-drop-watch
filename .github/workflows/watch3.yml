@@ -30,7 +30,7 @@ env:
   POLL_SECONDS: "300"
   NAG_MINUTES: "15"     # a drop re-alerts every minute for 15 min
   NAG_INTERVAL: "60"
-  SEAT_WATCH: "Sep 12,Sep 13,Sep 16"   # dates the user could attend
+  SEAT_WATCH: "Sep 12,Sep 13,Sep 14,Sep 15,Sep 16,Sep 17,Sep 18"   # trip window Sep 12-18
   START_OFFSET: "200"
   STATE_FILE: "state3.json"
   MAX_POLLS: "60"          # 70 x 5 min = 5h50m
