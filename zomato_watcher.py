@@ -37,6 +37,11 @@ CANARY_URL = os.environ.get(
     "CANARY_URL",
     "https://www.zomato.com/pune/german-bakery-koregaon-park/order")
 TOPIC = os.environ.get("NTFY_TOPIC", "")
+# Only check while the outlet can plausibly be serving. User's observed hours
+# are 11:30-22:30 IST; a small buffer either side covers early/late openings
+# without polling all night.
+WINDOW_START = os.environ.get("WINDOW_START", "11:15")   # IST, inclusive
+WINDOW_END = os.environ.get("WINDOW_END", "22:45")       # IST, exclusive
 NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "15"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +54,17 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 def now_ist():
     return datetime.now(IST)
+
+
+def in_window(t=None):
+    """True if IST time-of-day is inside the monitoring window."""
+    t = t or now_ist()
+    def mins(hhmm):
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+    now_m = t.hour * 60 + t.minute
+    a, b = mins(WINDOW_START), mins(WINDOW_END)
+    return a <= now_m < b if a <= b else (now_m >= a or now_m < b)
 
 
 def notify(title, body, priority="urgent", tags="hamburger,bell"):
@@ -153,6 +169,10 @@ def main():
     if "--test" in sys.argv:
         notify("Test: Zomato watcher live", "If you see this, alerts work.", "default")
         print("test push sent")
+        return
+    if not in_window():
+        print(f"[{now_ist():%a %d %b %H:%M IST}] outside monitoring window "
+              f"({WINDOW_START}-{WINDOW_END} IST) - skipping check")
         return
     try:
         open_now, eta, name, status, timing, ui_closed = fetch_status()

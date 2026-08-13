@@ -7,7 +7,8 @@ name: zomato-delivery-watch
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # 11:15-22:45 IST = 05:45-17:15 UTC (watcher also gates per-poll)
+    - cron: "*/5 5-17 * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,6 +23,8 @@ env:
   MAX_POLLS: "116"         # 116 x 3 min = 5h48m
   NAG_MINUTES: "15"
   NAG_INTERVAL: "60"
+  WINDOW_START: "11:15"    # IST - user says outlet runs 11:30-22:30
+  WINDOW_END: "22:45"
 
 jobs:
   watch:
@@ -35,6 +38,8 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_ZOMATO }}
           NAG_MINUTES: ${{ env.NAG_MINUTES }}
           NAG_INTERVAL: ${{ env.NAG_INTERVAL }}
+          WINDOW_START: ${{ env.WINDOW_START }}
+          WINDOW_END: ${{ env.WINDOW_END }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
