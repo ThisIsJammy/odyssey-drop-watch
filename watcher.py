@@ -236,13 +236,22 @@ def report_broken(msg):
     print(f"BROKEN: {msg}", file=sys.stderr)
     try:
         marker = STATE + ".problem"
-        last = os.path.getmtime(marker) if os.path.exists(marker) else 0.0
         bsig = "[broken:" + hashlib.sha1(msg.encode()).hexdigest()[:8] + "]"
-        if time.time() - last > 3600 and not _nag_already_running(bsig):
+        # throttle PER MESSAGE: a benign hold-off must not mute a fatal
+        # "cannot read the tracker at all" for the next hour
+        last, last_sig = 0.0, ""
+        if os.path.exists(marker):
+            last = os.path.getmtime(marker)
+            try:
+                last_sig = open(marker).read().split("|", 1)[1]
+            except Exception:
+                pass
+        if (last_sig != bsig or time.time() - last > 3600) \
+                and not _nag_already_running(bsig):
             notify("AMC WATCHER IS BROKEN - not just quiet",
                    f"{msg}\n\nSilence from now on does NOT mean 'no drop'.\n{bsig}",
                    "high")
-            open(marker, "w").write(str(time.time()))
+            open(marker, "w").write(f"{time.time()}|{bsig}")
     except Exception as e:
         print(f"  broken-alert failed: {e}", file=sys.stderr)
 
@@ -299,6 +308,17 @@ def _main():
         print(f"[{now}] baseline seeded: "
               + ", ".join(f"{t}={len(d)}" for t, d in cal.items())
               + " showtimes. No alert.")
+        return
+
+    prev_ls = sum(1 for k in old if k.startswith(ALERT_THEATER))
+    cur_ls = sum(1 for k in flat if k.startswith(ALERT_THEATER))
+    if prev_ls >= 8 and cur_ls * 2 < prev_ls:
+        # Lost more than half of a healthy Lincoln Square listing in one poll.
+        # Roll-off is 1-2 per poll, so this is a truncated render, not reality.
+        # Do NOT persist: the next good poll must not see a phantom drop.
+        report_broken(f"Lincoln Square went from {prev_ls} to {cur_ls} showtimes "
+                      f"in one poll - treating as a partial page render, not a "
+                      f"real change. Not updating state.")
         return
 
     new_keys = [k for k in flat if k not in old]
