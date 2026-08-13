@@ -222,14 +222,18 @@ def main():
                             "ordering_open": ordering_open,
                             "isServiceable": open_now, "eta": eta,
                             "res_status": status}) + "\n")
+    # Outlet open/closed is context, not the thing being waited for: send it as
+    # a single quiet note, and skip it entirely when the ordering state changed
+    # too (that alert already carries the news, and two repeating alarms for one
+    # event meant 30 pushes).
     if status != prev_status:
-        opened = "open" in status.lower()
-        (alarm if opened else lambda t, b: notify(t, b, "low", "no_entry"))(
-            f"{name}: outlet now {status}",
-            f"Outlet status changed: {prev_status!r} -> {status!r} at {stamp}\n"
-            f"{timing}\n{URL}\n"
-            f"(Delivery to your address may still differ - check the app.)")
         print(f"[{stamp}] outlet status {prev_status!r} -> {status!r}")
+        if ordering_open == prev:
+            notify(f"{name}: outlet now {status}",
+                   f"Outlet status changed: {prev_status!r} -> {status!r} at {stamp}\n"
+                   f"{timing}\n{URL}\n"
+                   f"(Online ordering still {'OPEN' if ordering_open else 'closed'}.)",
+                   "low", "information_source")
     if ordering_open == prev:
         return
     if ordering_open:
