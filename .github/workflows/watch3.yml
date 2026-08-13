@@ -33,7 +33,7 @@ env:
   SEAT_WATCH: "Sep 12,Sep 13,Sep 14,Sep 15,Sep 16,Sep 17,Sep 18"   # trip window Sep 12-18
   START_OFFSET: "200"
   STATE_FILE: "state3.json"
-  MAX_POLLS: "60"          # 70 x 5 min = 5h50m
+  MAX_POLLS: "60"          # 60 x 5 min = 5h00m
 
 jobs:
   watch:

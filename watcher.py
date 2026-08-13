@@ -57,6 +57,23 @@ def notify_retry(title, body, priority="urgent", tries=3):
     raise AlertUndelivered(str(last))
 
 
+MAX_BODY = 3500          # ntfy turns >4096-byte bodies into an attachment
+
+
+def cap(lines, tail):
+    """Keep an alert readable inside ntfy's message limit."""
+    body = "\n".join(lines) + tail
+    if len(body.encode()) <= MAX_BODY:
+        return body
+    kept = []
+    for ln in lines:
+        if len("\n".join(kept + [ln]).encode()) > MAX_BODY - len(tail.encode()) - 120:
+            break
+        kept.append(ln)
+    return ("\n".join(kept)
+            + f"\n...and {len(lines) - len(kept)} more (see the tracker)" + tail)
+
+
 def notify(title, body, priority="urgent"):
     req = urllib.request.Request(
         f"https://ntfy.sh/{TOPIC}",
@@ -145,9 +162,14 @@ def parse_calendar(raw):
                     key = f"{dl}|{st.get('timeLabel', '?')}"
                     d[key] = m.group(1)
                     STATUS[f"{name}|{key}"] = st.get("availabilityStatus")
-    if len(cal.get(ALERT_THEATER, {})) < 4:
-        counts = {k: len(v) for k, v in cal.items()}
-        raise RuntimeError(f"parse suspiciously small for {ALERT_THEATER}: {counts}")
+    # NOTE: do NOT threshold on an absolute count here. The run legitimately
+    # winds down to 3, 2, 1 showtimes as dates pass (Lincoln Square ends Sep 16),
+    # and a fixed floor of 4 would raise on every poll from Sep 16 10:00 ET -
+    # freezing the watcher on the last day of the run. Only a structurally
+    # broken parse is an error; a shrinking-but-parsed calendar is normal.
+    if not any(cal.values()):
+        raise RuntimeError(f"no showtimes parsed for any venue: "
+                           f"{ {k: len(v) for k, v in cal.items()} }")
     return cal
 
 def fetch_calendar():
@@ -176,12 +198,31 @@ def write_json(path, payload):
 
 
 def main():
+    """Any unexpected failure must be loud, never a silent no-op."""
     try:
         _main()
     except AlertUndelivered as e:
         print(f"ALERT DELIVERY FAILED ({e}) - state left unchanged, will retry "
               f"next poll", file=sys.stderr)
         sys.exit(1)
+    except Exception as e:
+        # previously any non-AlertUndelivered error skipped persist() silently
+        report_broken(f"unexpected error: {type(e).__name__}: {e}")
+        raise
+
+
+def report_broken(msg):
+    """Loud, throttled 'the watcher itself is broken' alert."""
+    print(f"BROKEN: {msg}", file=sys.stderr)
+    try:
+        marker = STATE + ".problem"
+        last = os.path.getmtime(marker) if os.path.exists(marker) else 0.0
+        if time.time() - last > 3600:
+            notify("AMC WATCHER IS BROKEN - not just quiet",
+                   f"{msg}\n\nSilence from now on does NOT mean 'no drop'.", "high")
+            open(marker, "w").write(str(time.time()))
+    except Exception as e:
+        print(f"  broken-alert failed: {e}", file=sys.stderr)
 
 
 def _main():
@@ -192,89 +233,130 @@ def _main():
     try:
         cal = fetch_calendar()
     except Exception as e:
-        # loud failure so silence always means "no news"
-        try:
-            notify("gh-actions watcher: fetch/parse problem", str(e), "low")
-        except Exception:
-            pass
-        print(f"[{now}] fetch/parse failed: {e}", file=sys.stderr)
+        report_broken(f"cannot read the tracker: {e}")
         sys.exit(1)
+
     flat = {f"{t}|{k}": v for t, d in cal.items() for k, v in d.items()}
-    # availability snapshot for the showtimes we're seat-watching
     seat_now = {k: STATUS.get(k) for k in flat
                 if k.startswith(ALERT_THEATER) and any(d in k for d in SEAT_WATCH)}
+    seat_path = STATE.replace(".json", "_seats.json")
+    guard_marker = STATE + ".reshape"
+
     old = None
     try:
         with open(STATE) as f:
-            old = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+            loaded = json.load(f)
+        old = loaded if isinstance(loaded, dict) and loaded else None
+        if old is None:
+            report_broken(f"{STATE} was empty/not-a-dict - re-baselining, so a "
+                          f"drop happening right now could be missed")
+    except FileNotFoundError:
         pass
-    # state is written at the end, only once alerts have been delivered
-    seat_path = STATE.replace(".json", "_seats.json")
+    except Exception as e:
+        report_broken(f"{STATE} unreadable ({e}) - re-baselining, so a drop "
+                      f"happening right now could be missed")
+
     seat_prev = {}
-    if os.path.exists(seat_path):
-        try:
-            seat_prev = json.load(open(seat_path))
-        except json.JSONDecodeError:
-            pass
+    try:
+        with open(seat_path) as f:
+            sp = json.load(f)
+        seat_prev = sp if isinstance(sp, dict) else {}
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  seat snapshot unreadable ({e})")
 
     def persist():
         write_json(STATE, flat)
         write_json(seat_path, seat_now)
+        if os.path.exists(guard_marker):
+            os.remove(guard_marker)
 
-    if seat_prev:
-        opened = [k for k, v in seat_now.items()
-                  if v == "tickets" and seat_prev.get(k) not in (None, "tickets")]
-        if opened:
-            lines = [f"{k.split('|', 1)[1]} -> amctheatres.com/showtimes/{flat[k]}/seats"
-                     for k in sorted(opened)]
-            dates = sorted({k.split("|")[1] for k in opened})
-            alarm(f"SEATS MAY HAVE OPENED: {', '.join(dates)}"
-                  f" ({len(opened)} showtime(s))",
-                  "\n".join(lines) +
-                  "\n\nTracker flipped sold-out -> on sale. VERIFY ON AMC - this "
-                  "status has lagged reality before.")
-            print(f"seat-availability alert: {opened}")
     if old is None:
         persist()
         print(f"[{now}] baseline seeded: "
-              + ", ".join(f"{t}={len(d)}" for t, d in cal.items()) + " showtimes. No alert.")
+              + ", ".join(f"{t}={len(d)}" for t, d in cal.items())
+              + " showtimes. No alert.")
         return
+
     new_keys = [k for k in flat if k not in old]
     vanished = [k for k in old if k not in flat]
-    # A genuine release ADDS showtimes; almost nothing disappears at the same
-    # moment. Simultaneous mass appearance AND disappearance is the fingerprint
-    # of an upstream relabel (e.g. "Sat, Sep 12" -> "Saturday Sep 12"), which
-    # would otherwise fire an urgent alarm for ~130 imaginary showtimes.
+
+    # A relabel upstream makes every key look new. Refuse to alert - but do NOT
+    # deadlock: after 3 consecutive polls showing the same reshape, accept the
+    # new key space, otherwise the watcher never alerts again (it has already
+    # happened once, on the CityWalk -> CityWalk Hollywood rename).
     if len(new_keys) > 6 and len(vanished) > 6:
-        msg = (f"{len(new_keys)} keys appeared and {len(vanished)} vanished in "
-               f"one poll - that is a relabel/degraded page, not a drop. "
-               f"Not alerting; parser needs checking.")
-        print(msg, file=sys.stderr)
+        trips = 0
         try:
-            notify("AMC watcher needs attention", msg, "default")
+            trips = int(open(guard_marker).read().strip())
         except Exception:
             pass
-        return          # deliberately NOT persisting: keep the old baseline
+        trips += 1
+        try:
+            open(guard_marker, "w").write(str(trips))
+        except OSError:
+            pass
+        if trips < 3:
+            print(f"[{now}] reshape #{trips}/3: {len(new_keys)} appeared, "
+                  f"{len(vanished)} vanished - not alerting yet", file=sys.stderr)
+            report_broken(f"{len(new_keys)} showtimes appeared and "
+                          f"{len(vanished)} vanished in one poll - looks like an "
+                          f"upstream relabel, not a drop. Holding off.")
+            return
+        print(f"[{now}] reshape persisted after {trips} polls - adopting new "
+              f"key space (no drop alert)", file=sys.stderr)
+        persist()
+        return
+
+    # --- drop detection first: it is the alert that matters most ---
     ls_new = [k for k in new_keys if k.startswith(ALERT_THEATER)]
     if ls_new:
         lines = []
         for k in sorted(ls_new):
-            _, date_label, time_label = k.split("|")
-            lines.append(f"{date_label} {time_label} -> amctheatres.com/showtimes/{flat[k]}/seats")
+            parts = k.split("|")
+            lines.append(f"{parts[1]} {parts[2]} -> "
+                         f"amctheatres.com/showtimes/{flat[k]}/seats")
         alarm(f"LINCOLN SQUARE DROP: {len(ls_new)} new showtime(s)!",
-              "\n".join(lines) + "\n\nBUY NOW - 80% sells in the first hour.")
+              cap(lines, "\n\nBUY NOW - 80% sells in the first hour."))
         print(f"[{now}] ALERT sent: {ls_new}")
+
+    # --- then seat flips, with hysteresis: the tracker's status flaps between
+    # wheelchairOnly and tickets many times a day, which produced false alarm
+    # storms. Require the same 'tickets' reading on two consecutive polls. ---
+    pending = {k for k, v in seat_prev.items() if v == "__pending__"}
+    confirmed, now_pending = [], {}
+    for k, v in seat_now.items():
+        was = seat_prev.get(k)
+        if v == "tickets" and was not in (None, "tickets", "__pending__"):
+            now_pending[k] = "__pending__"          # first sighting: wait one poll
+        elif v == "tickets" and k in pending:
+            confirmed.append(k)
+    if confirmed:
+        lines = [f"{k.split('|')[1]} {k.split('|')[2]} -> "
+                 f"amctheatres.com/showtimes/{flat[k]}/seats"
+                 for k in sorted(confirmed)]
+        dates = sorted({k.split("|")[1] for k in confirmed})
+        alarm(f"SEATS MAY HAVE OPENED: {', '.join(dates)} "
+              f"({len(confirmed)} showtime(s))",
+              cap(lines, "\n\nOn sale for two polls running. VERIFY ON AMC."))
+        print(f"[{now}] seat alert: {confirmed}")
+    seat_now.update(now_pending)     # remember first sightings for the next poll
+
     other_new = [k for k in new_keys if not k.startswith(ALERT_THEATER)]
     if other_new:
-        notify("Other 70mm venue added showtimes", "\n".join(sorted(other_new)), "default")
-        print(f"[{now}] info: other venues added {other_new}")
+        try:
+            notify("Other 70mm venue added showtimes", cap(sorted(other_new), ""),
+                   "default")
+        except Exception as e:
+            print(f"  other-venue note failed (ignored): {e}")
+
     persist()
-    gone = [k for k in old if k not in flat]
-    if gone:
-        print(f"[{now}] note: {len(gone)} showtime(s) disappeared: {sorted(gone)[:6]}")
-    if not new_keys and not gone:
-        print(f"[{now}] no change ({len(flat)} showtimes tracked)")
+    if vanished:
+        print(f"[{now}] note: {len(vanished)} showtime(s) rolled off")
+    if not new_keys and not vanished and not confirmed:
+        print(f"[{now}] no change ({len(flat)} showtimes tracked, "
+              f"{len(seat_now)} seats watched)")
 
 if __name__ == "__main__":
     main()
