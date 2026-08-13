@@ -89,7 +89,15 @@ def alarm(title, body):
 
 
 def fetch_status():
-    """(isServiceable, deliveryTime, restaurantName). Raises on parse failure."""
+    """(isServiceable, deliveryTime, name, res_status, timing_desc).
+
+    NOTE (2026-08-13): isServiceable is NOT "delivery is open" - it means
+    "delivers to the location this request is assumed to be at". An anonymous
+    request lands on Pune subzone 1165, which cannot reach Koregaon Park:
+    German Bakery (Koregaon Park) reads res_status='Open now' AND
+    isServiceable=False at the same time. So we also track res_status_text,
+    which is the outlet's own open/closed state and is location-independent.
+    """
     last = None
     for attempt in range(3):
         try:
@@ -108,9 +116,12 @@ def fetch_status():
             for rid, blob in res.items():
                 od = blob.get("orderDetails") or {}
                 if "isServiceable" in od:
-                    name = (((blob.get("sections") or {}).get("SECTION_BASIC_INFO")
-                             or {}).get("name")) or f"res {rid}"
-                    return bool(od["isServiceable"]), od.get("deliveryTime") or "", name
+                    bi = (blob.get("sections") or {}).get("SECTION_BASIC_INFO") or {}
+                    name = bi.get("name") or f"res {rid}"
+                    status = bi.get("res_status_text") or ""
+                    timing = (bi.get("timing") or {}).get("timing_desc") or ""
+                    return (bool(od["isServiceable"]), od.get("deliveryTime") or "",
+                            name, status, timing)
             raise RuntimeError("orderDetails.isServiceable missing - schema changed")
         except Exception as e:
             last = e
@@ -125,7 +136,7 @@ def main():
         print("test push sent")
         return
     try:
-        open_now, eta, name = fetch_status()
+        open_now, eta, name, status, timing = fetch_status()
     except Exception as e:
         print(f"[{now_ist():%Y-%m-%d %H:%M IST}] fetch/parse failed: {e}", file=sys.stderr)
         try:
@@ -134,27 +145,39 @@ def main():
             pass
         sys.exit(1)
 
-    prev = None
+    prev = prev_status = None
     if os.path.exists(STATE):
         try:
-            prev = json.load(open(STATE)).get("open")
+            old = json.load(open(STATE))
+            prev, prev_status = old.get("open"), old.get("res_status")
         except json.JSONDecodeError:
             pass
-    json.dump({"open": open_now, "eta": eta, "name": name,
-               "checked": now_ist().isoformat()}, open(STATE, "w"), indent=1)
+    json.dump({"open": open_now, "eta": eta, "name": name, "res_status": status,
+               "timing": timing, "checked": now_ist().isoformat()},
+              open(STATE, "w"), indent=1)
 
     stamp = f"{now_ist():%a %d %b %H:%M IST}"
     if prev is None:
-        print(f"[{stamp}] baseline: {name} delivery {'OPEN' if open_now else 'closed'}"
-              f"{' (' + eta + ')' if eta else ''} - no alert")
+        print(f"[{stamp}] baseline: {name} | outlet={status!r} {timing!r} | "
+              f"deliverable-to-default={open_now} - no alert")
         return
-    if open_now == prev:
-        print(f"[{stamp}] no change ({'OPEN' if open_now else 'closed'})")
+    if open_now == prev and status == prev_status:
+        print(f"[{stamp}] no change (outlet={status!r}, deliverable={open_now})")
         return
 
     with open(HISTORY, "a") as f:
         f.write(json.dumps({"ts": now_ist().isoformat(), "open": open_now,
-                            "eta": eta}) + "\n")
+                            "eta": eta, "res_status": status}) + "\n")
+    if status != prev_status:
+        opened = "open" in status.lower()
+        (alarm if opened else lambda t, b: notify(t, b, "low", "no_entry"))(
+            f"{name}: outlet now {status}",
+            f"Outlet status changed: {prev_status!r} -> {status!r} at {stamp}\n"
+            f"{timing}\n{URL}\n"
+            f"(Delivery to your address may still differ - check the app.)")
+        print(f"[{stamp}] outlet status {prev_status!r} -> {status!r}")
+    if open_now == prev:
+        return
     if open_now:
         alarm(f"{name}: DELIVERY IS OPEN",
               f"Online ordering just opened{' - ETA ' + eta if eta else ''}.\n"
