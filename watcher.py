@@ -17,7 +17,7 @@ import re
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 PAGE = "https://drop70mm.com/movie/e7b76748-c975-4aaf-ba4e-9c65dee2057a"
 # each parallel poller keeps its own state file so concurrent runs never
@@ -101,7 +101,7 @@ def _nag_already_running(sig):
     return False
 
 
-def alarm(title, body):
+def alarm(title, body, sig_key=None):
     """Push now, then repeat every NAG_INTERVAL for NAG_MINUTES.
 
     The repeats run INLINE (blocking), not on a background thread: each poll is
@@ -109,7 +109,7 @@ def alarm(title, body):
     silently swallowed every repeat in testing. Blocking costs this poller a
     few polls; the other two pollers keep watching in the meantime, and the
     dedupe check above means only one poller ever blocks.""" 
-    sig = "[drop:" + hashlib.sha1(body.encode()).hexdigest()[:8] + "]"
+    sig = "[drop:" + hashlib.sha1((sig_key or body).encode()).hexdigest()[:8] + "]"
     if _nag_already_running(sig):
         print(f"repeat-alarm already running elsewhere for {sig} - single push only")
         notify_retry(title, f"{body}\n{sig}")
@@ -186,6 +186,26 @@ def fetch_calendar():
                 time.sleep(20)
     raise last_err
 
+SHOW_YEAR = int(os.environ.get("SHOW_YEAR", "2026"))
+ET = timezone(timedelta(hours=-4))       # venue-local; DST-exact is not needed
+
+
+def is_future(key):
+    """True if this showtime has not started yet (or cannot be parsed).
+
+    Unparseable -> treated as future ON PURPOSE: a relabel is exactly what
+    breaks parsing, and that case SHOULD count toward the reshape guard.
+    """
+    try:
+        _, date_label, time_label = key.split("|")
+        mon_day = date_label.split(", ")[-1]              # "Wed, Sep 16" -> "Sep 16"
+        t = datetime.strptime(f"{mon_day} {SHOW_YEAR} {time_label}",
+                              "%b %d %Y %I:%M %p").replace(tzinfo=ET)
+        return t > datetime.now(ET)
+    except Exception:
+        return True
+
+
 def write_json(path, payload):
     """Atomic write: a killed runner must not leave half-written JSON that
     silently re-baselines (and thereby swallows a real drop)."""
@@ -217,9 +237,11 @@ def report_broken(msg):
     try:
         marker = STATE + ".problem"
         last = os.path.getmtime(marker) if os.path.exists(marker) else 0.0
-        if time.time() - last > 3600:
+        bsig = "[broken:" + hashlib.sha1(msg.encode()).hexdigest()[:8] + "]"
+        if time.time() - last > 3600 and not _nag_already_running(bsig):
             notify("AMC WATCHER IS BROKEN - not just quiet",
-                   f"{msg}\n\nSilence from now on does NOT mean 'no drop'.", "high")
+                   f"{msg}\n\nSilence from now on does NOT mean 'no drop'.\n{bsig}",
+                   "high")
             open(marker, "w").write(str(time.time()))
     except Exception as e:
         print(f"  broken-alert failed: {e}", file=sys.stderr)
@@ -286,7 +308,11 @@ def _main():
     # deadlock: after 3 consecutive polls showing the same reshape, accept the
     # new key space, otherwise the watcher never alerts again (it has already
     # happened once, on the CityWalk -> CityWalk Hollywood rename).
-    if len(new_keys) > 6 and len(vanished) > 6:
+    # Roll-off is not reshape: showtimes vanish as they screen. Counting those
+    # meant a 1-day runner outage plus a genuine 8-showtime extension looked
+    # like a relabel and the drop was suppressed permanently.
+    vanished_future = [k for k in vanished if is_future(k)]
+    if len(new_keys) > 6 and len(vanished_future) > 6:
         trips = 0
         try:
             trips = int(open(guard_marker).read().strip())
@@ -299,13 +325,25 @@ def _main():
             pass
         if trips < 3:
             print(f"[{now}] reshape #{trips}/3: {len(new_keys)} appeared, "
-                  f"{len(vanished)} vanished - not alerting yet", file=sys.stderr)
+                  f"{len(vanished_future)} future-dated vanished - not alerting yet",
+                  file=sys.stderr)
             report_broken(f"{len(new_keys)} showtimes appeared and "
-                          f"{len(vanished)} vanished in one poll - looks like an "
-                          f"upstream relabel, not a drop. Holding off.")
+                          f"{len(vanished_future)} future-dated ones vanished in "
+                          f"one poll - looks like an upstream relabel, not a drop. "
+                          f"Holding off.")
             return
         print(f"[{now}] reshape persisted after {trips} polls - adopting new "
-              f"key space (no drop alert)", file=sys.stderr)
+              f"key space", file=sys.stderr)
+        adopt_ls = [k for k in new_keys if k.startswith(ALERT_THEATER)]
+        if adopt_ls:
+            # late, but never silent: if any of the adopted keys are real new
+            # showtimes, the user still needs to hear about them
+            lines = [f"{k.split('|')[1]} {k.split('|')[2]} -> "
+                     f"amctheatres.com/showtimes/{flat[k]}/seats"
+                     for k in sorted(adopt_ls)]
+            alarm(f"POSSIBLE DROP (after a page reshape): {len(adopt_ls)} showtime(s)",
+                  cap(lines, "\n\nThe page changed shape, so this may be a relabel "
+                             "rather than a real release - CHECK AMC."))
         persist()
         return
 
@@ -318,7 +356,8 @@ def _main():
             lines.append(f"{parts[1]} {parts[2]} -> "
                          f"amctheatres.com/showtimes/{flat[k]}/seats")
         alarm(f"LINCOLN SQUARE DROP: {len(ls_new)} new showtime(s)!",
-              cap(lines, "\n\nBUY NOW - 80% sells in the first hour."))
+              cap(lines, "\n\nBUY NOW - 80% sells in the first hour."),
+              sig_key="drop:" + ",".join(sorted(flat[k] for k in ls_new)))
         print(f"[{now}] ALERT sent: {ls_new}")
 
     # --- then seat flips, with hysteresis: the tracker's status flaps between
@@ -339,7 +378,8 @@ def _main():
         dates = sorted({k.split("|")[1] for k in confirmed})
         alarm(f"SEATS MAY HAVE OPENED: {', '.join(dates)} "
               f"({len(confirmed)} showtime(s))",
-              cap(lines, "\n\nOn sale for two polls running. VERIFY ON AMC."))
+              cap(lines, "\n\nOn sale for two polls running. VERIFY ON AMC."),
+              sig_key="seats:" + ",".join(sorted(flat[k] for k in confirmed)))
         print(f"[{now}] seat alert: {confirmed}")
     seat_now.update(now_pending)     # remember first sightings for the next poll
 

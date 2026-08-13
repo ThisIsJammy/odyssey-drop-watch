@@ -63,8 +63,17 @@ jobs:
             if [ -n "$(git status --porcelain "$STATE_FILE" "$SEAT_SNAP")" ]; then
               git add -A -- "$STATE_FILE" "$SEAT_SNAP" || true
               git commit -q -m "update state [skip ci]" || true
-              git pull -q --rebase || true
-              git push -q || true
+              for attempt in 1 2 3; do
+                git rebase --abort 2>/dev/null || true
+                if git pull -q --rebase && git push -q; then break; fi
+                sleep $(( (RANDOM % 10) + 5 ))
+              done
             fi
-            if [ "$i" -lt "$MAX_POLLS" ]; then sleep "$POLL_SECONDS"; fi
+            # re-align to this poller's slot rather than sleeping a fixed
+            # period: an inline nag (~14 min) is not a multiple of the period
+            # and would otherwise shift phase permanently, collapsing the
+            # stagger the cross-poller dedupe depends on
+            if [ "$i" -lt "$MAX_POLLS" ]; then
+              sleep $(( (300 + START_OFFSET - $(date +%s) % 300) % 300 ))
+            fi
           done
