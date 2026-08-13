@@ -29,6 +29,13 @@ from datetime import datetime, timedelta, timezone
 URL = os.environ.get(
     "ZOMATO_URL",
     "https://www.zomato.com/pune/burger-king-koregaon-park/order")
+# A control restaurant in the SAME area/pincode as the target. If the canary
+# ever reads serviceable while the target does not, our vantage point can
+# clearly see Koregaon Park and the target really is closed for online
+# ordering - which is the doubt this whole watcher would otherwise carry.
+CANARY_URL = os.environ.get(
+    "CANARY_URL",
+    "https://www.zomato.com/pune/german-bakery-koregaon-park/order")
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "15"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
@@ -86,6 +93,38 @@ def alarm(title, body):
             print(f"repeat {n} failed: {e}")
             return
     print(f"alarm finished: {reps} alerts")
+
+
+def fetch_one(url):
+    """(isServiceable, deliveryTime, name, res_status, timing_desc) for a url."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": UA, "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read().decode(errors="replace")
+    m = re.search(
+        r'window\.__PRELOADED_STATE__\s*=\s*JSON\.parse\("(.*?)"\);?\s*</script>',
+        raw, re.S)
+    if not m:
+        raise RuntimeError("PRELOADED_STATE not found - page layout changed")
+    data = json.loads(json.loads('"' + m.group(1) + '"'))
+    for rid, blob in ((data.get("pages") or {}).get("restaurant") or {}).items():
+        od = blob.get("orderDetails") or {}
+        if "isServiceable" in od:
+            bi = (blob.get("sections") or {}).get("SECTION_BASIC_INFO") or {}
+            return (bool(od["isServiceable"]), od.get("deliveryTime") or "",
+                    bi.get("name") or f"res {rid}", bi.get("res_status_text") or "",
+                    (bi.get("timing") or {}).get("timing_desc") or "")
+    raise RuntimeError("orderDetails.isServiceable missing - schema changed")
+
+
+def canary_status():
+    """Serviceability of the same-area control; None if it can't be read."""
+    try:
+        return fetch_one(CANARY_URL)[0]
+    except Exception as e:
+        print(f"canary check failed: {e}")
+        return None
 
 
 def fetch_status():
@@ -152,17 +191,22 @@ def main():
             prev, prev_status = old.get("open"), old.get("res_status")
         except json.JSONDecodeError:
             pass
+    canary = canary_status()
     json.dump({"open": open_now, "eta": eta, "name": name, "res_status": status,
-               "timing": timing, "checked": now_ist().isoformat()},
-              open(STATE, "w"), indent=1)
+               "timing": timing, "canary_open": canary,
+               "checked": now_ist().isoformat()}, open(STATE, "w"), indent=1)
 
     stamp = f"{now_ist():%a %d %b %H:%M IST}"
     if prev is None:
         print(f"[{stamp}] baseline: {name} | outlet={status!r} {timing!r} | "
-              f"deliverable-to-default={open_now} - no alert")
+              f"online-ordering={open_now} | canary={canary} - no alert")
         return
     if open_now == prev and status == prev_status:
-        print(f"[{stamp}] no change (outlet={status!r}, deliverable={open_now})")
+        note = ""
+        if canary and not open_now:
+            note = "  [canary IS open -> our view reaches Koregaon Park, target genuinely shut]"
+        print(f"[{stamp}] no change (outlet={status!r}, online-ordering={open_now}, "
+              f"canary={canary}){note}")
         return
 
     with open(HISTORY, "a") as f:
