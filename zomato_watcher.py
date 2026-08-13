@@ -37,6 +37,9 @@ CANARY_URL = os.environ.get(
     "CANARY_URL", "https://www.zomato.com/pune/german-bakery-koregaon-park/order")
 TOPIC = os.environ.get("NTFY_TOPIC", "")
 NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "10"))
+# keep nagging while it is genuinely still open, up to this cap (observed
+# windows are ~23 min, and a fixed burst can end while it's still orderable)
+MAX_NAG_MINUTES = int(os.environ.get("MAX_NAG_MINUTES", "40"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 WINDOW_START = os.environ.get("WINDOW_START", "11:15")   # IST, inclusive
 WINDOW_END = os.environ.get("WINDOW_END", "22:45")       # IST, exclusive
@@ -121,15 +124,29 @@ def alarm(title, body, sig_key):
         notify_retry(title, f"{body}\n{sig} (alarm already running elsewhere)")
         print("  alarm already running elsewhere - single push")
         return
-    reps = max(1, (NAG_MINUTES * 60) // NAG_INTERVAL)
-    notify_retry(title, f"{body}\n{sig} alert 1/{reps}")   # raises if undeliverable
-    for n in range(2, reps + 1):
+    max_reps = max(1, (MAX_NAG_MINUTES * 60) // NAG_INTERVAL)
+    notify_retry(title, f"{body}\n{sig} alert 1")   # raises if undeliverable
+    for n in range(2, max_reps + 1):
         time.sleep(NAG_INTERVAL)
         try:
-            notify(f"STILL OPEN? {title}", f"{body}\n{sig} alert {n}/{reps}")
+            still_open = fetch_one(URL)[0]
+        except Exception as e:
+            print(f"  re-check {n} failed ({e}) - continuing to nag")
+            still_open = True
+        if not still_open:
+            try:
+                notify(f"{title} - WINDOW CLOSED",
+                       f"It shut again after ~{n} min. Alarm stopping.\n{sig}",
+                       "low", "no_entry")
+            except Exception:
+                pass
+            print(f"  target closed after {n} repeats - alarm stopped")
+            return
+        try:
+            notify(f"STILL OPEN ({n} min): {title}", f"{body}\n{sig} alert {n}")
         except Exception as e:
             print(f"  repeat {n} failed: {e}")
-    print(f"  alarm finished ({reps} alerts over ~{NAG_MINUTES} min)")
+    print(f"  alarm hit the {MAX_NAG_MINUTES} min cap while still open")
 
 
 def write_state(payload):
@@ -306,11 +323,10 @@ def main():
                 notify_retry(f"{name}: ordering closed again",
                              f"Closed at {stamp}", "low", "no_entry")
         elif status != prev_status:
-            notify_retry(f"{name}: outlet now {status}",
-                         f"Outlet {prev_status!r} -> {status!r} at {stamp}\n{timing}\n"
-                         f"(Online ordering still "
-                         f"{'OPEN' if ordering_open else 'closed'}.)",
-                         "low", "information_source")
+            # log only. res_status_text is a live countdown ("Opens in 29
+            # minutes"), so pushing it meant ~11 junk alerts before every
+            # opening - exactly the noise that makes a real alert get ignored.
+            print(f"[{stamp}] outlet {prev_status!r} -> {status!r} (not pushed)")
     except Exception as e:
         # Do NOT persist: leaving state unchanged means the next poll sees the
         # same transition and tries again, instead of losing the event forever.
