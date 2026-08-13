@@ -95,8 +95,15 @@ def alarm(title, body):
     print(f"alarm finished: {reps} alerts")
 
 
+# The literal sentence shown on the page when ordering is off. It also exists
+# as an invisible UI template string in EVERY page, so only count it when it
+# sits between HTML tags (i.e. actually rendered).
+CLOSED_TEXT = "Currently closed for online ordering"
+CLOSED_RENDERED = re.compile(r">\s*" + re.escape(CLOSED_TEXT) + r"\s*<")
+
+
 def fetch_one(url):
-    """(isServiceable, deliveryTime, name, res_status, timing_desc) for a url."""
+    """(isServiceable, deliveryTime, name, res_status, timing_desc, ui_closed)."""
     req = urllib.request.Request(url, headers={
         "User-Agent": UA, "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9"})
@@ -108,13 +115,14 @@ def fetch_one(url):
     if not m:
         raise RuntimeError("PRELOADED_STATE not found - page layout changed")
     data = json.loads(json.loads('"' + m.group(1) + '"'))
+    ui_closed = bool(CLOSED_RENDERED.search(raw))
     for rid, blob in ((data.get("pages") or {}).get("restaurant") or {}).items():
         od = blob.get("orderDetails") or {}
         if "isServiceable" in od:
             bi = (blob.get("sections") or {}).get("SECTION_BASIC_INFO") or {}
             return (bool(od["isServiceable"]), od.get("deliveryTime") or "",
                     bi.get("name") or f"res {rid}", bi.get("res_status_text") or "",
-                    (bi.get("timing") or {}).get("timing_desc") or "")
+                    (bi.get("timing") or {}).get("timing_desc") or "", ui_closed)
     raise RuntimeError("orderDetails.isServiceable missing - schema changed")
 
 
@@ -128,40 +136,12 @@ def canary_status():
 
 
 def fetch_status():
-    """(isServiceable, deliveryTime, name, res_status, timing_desc).
-
-    NOTE (2026-08-13): isServiceable is NOT "delivery is open" - it means
-    "delivers to the location this request is assumed to be at". An anonymous
-    request lands on Pune subzone 1165, which cannot reach Koregaon Park:
-    German Bakery (Koregaon Park) reads res_status='Open now' AND
-    isServiceable=False at the same time. So we also track res_status_text,
-    which is the outlet's own open/closed state and is location-independent.
-    """
+    """Target restaurant status, with retries. Single parsing path (fetch_one)
+    so the target and the canary can never drift apart."""
     last = None
     for attempt in range(3):
         try:
-            req = urllib.request.Request(URL, headers={
-                "User-Agent": UA, "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read().decode(errors="replace")
-            m = re.search(
-                r'window\.__PRELOADED_STATE__\s*=\s*JSON\.parse\("(.*?)"\);?\s*</script>',
-                raw, re.S)
-            if not m:
-                raise RuntimeError("PRELOADED_STATE not found - page layout changed")
-            data = json.loads(json.loads('"' + m.group(1) + '"'))
-            res = (data.get("pages") or {}).get("restaurant") or {}
-            for rid, blob in res.items():
-                od = blob.get("orderDetails") or {}
-                if "isServiceable" in od:
-                    bi = (blob.get("sections") or {}).get("SECTION_BASIC_INFO") or {}
-                    name = bi.get("name") or f"res {rid}"
-                    status = bi.get("res_status_text") or ""
-                    timing = (bi.get("timing") or {}).get("timing_desc") or ""
-                    return (bool(od["isServiceable"]), od.get("deliveryTime") or "",
-                            name, status, timing)
-            raise RuntimeError("orderDetails.isServiceable missing - schema changed")
+            return fetch_one(URL)
         except Exception as e:
             last = e
             if attempt < 2:
@@ -175,7 +155,7 @@ def main():
         print("test push sent")
         return
     try:
-        open_now, eta, name, status, timing = fetch_status()
+        open_now, eta, name, status, timing, ui_closed = fetch_status()
     except Exception as e:
         print(f"[{now_ist():%Y-%m-%d %H:%M IST}] fetch/parse failed: {e}", file=sys.stderr)
         try:
@@ -184,34 +164,44 @@ def main():
             pass
         sys.exit(1)
 
+    ordering_open = (not ui_closed)      # what the page literally says
     prev = prev_status = None
     if os.path.exists(STATE):
         try:
             old = json.load(open(STATE))
-            prev, prev_status = old.get("open"), old.get("res_status")
+            prev, prev_status = old.get("ordering_open"), old.get("res_status")
         except json.JSONDecodeError:
             pass
     canary = canary_status()
-    json.dump({"open": open_now, "eta": eta, "name": name, "res_status": status,
-               "timing": timing, "canary_open": canary,
+    json.dump({"ordering_open": ordering_open, "page_says_closed": ui_closed,
+               "isServiceable": open_now, "eta": eta, "name": name,
+               "res_status": status, "timing": timing, "canary_open": canary,
                "checked": now_ist().isoformat()}, open(STATE, "w"), indent=1)
 
     stamp = f"{now_ist():%a %d %b %H:%M IST}"
     if prev is None:
-        print(f"[{stamp}] baseline: {name} | outlet={status!r} {timing!r} | "
-              f"online-ordering={open_now} | canary={canary} - no alert")
+        print(f"[{stamp}] baseline: {name} | page says "
+              f"{'CLOSED for online ordering' if ui_closed else 'ORDERING OPEN'} | "
+              f"outlet={status!r} {timing!r} | isServiceable={open_now} | "
+              f"canary={canary} - no alert")
         return
-    if open_now == prev and status == prev_status:
+    if ordering_open != open_now:
+        print(f"[{stamp}] NOTE: page text and isServiceable disagree "
+              f"(page_open={ordering_open}, isServiceable={open_now})")
+    if ordering_open == prev and status == prev_status:
         note = ""
-        if canary and not open_now:
+        if canary and not ordering_open:
             note = "  [canary IS open -> our view reaches Koregaon Park, target genuinely shut]"
-        print(f"[{stamp}] no change (outlet={status!r}, online-ordering={open_now}, "
+        print(f"[{stamp}] no change (page: "
+              f"{'closed' if ui_closed else 'OPEN'}, outlet={status!r}, "
               f"canary={canary}){note}")
         return
 
     with open(HISTORY, "a") as f:
-        f.write(json.dumps({"ts": now_ist().isoformat(), "open": open_now,
-                            "eta": eta, "res_status": status}) + "\n")
+        f.write(json.dumps({"ts": now_ist().isoformat(),
+                            "ordering_open": ordering_open,
+                            "isServiceable": open_now, "eta": eta,
+                            "res_status": status}) + "\n")
     if status != prev_status:
         opened = "open" in status.lower()
         (alarm if opened else lambda t, b: notify(t, b, "low", "no_entry"))(
@@ -220,11 +210,12 @@ def main():
             f"{timing}\n{URL}\n"
             f"(Delivery to your address may still differ - check the app.)")
         print(f"[{stamp}] outlet status {prev_status!r} -> {status!r}")
-    if open_now == prev:
+    if ordering_open == prev:
         return
-    if open_now:
-        alarm(f"{name}: DELIVERY IS OPEN",
-              f"Online ordering just opened{' - ETA ' + eta if eta else ''}.\n"
+    if ordering_open:
+        alarm(f"{name}: ONLINE ORDERING IS OPEN",
+              f"The page no longer says '{CLOSED_TEXT}'"
+              f"{' - ETA ' + eta if eta else ''}.\n"
               f"Opened at {stamp}\n{URL}\nORDER NOW - this window may be short.")
         print(f"[{stamp}] OPENED - alarm sent")
     else:
