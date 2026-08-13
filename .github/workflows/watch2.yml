@@ -33,7 +33,7 @@ env:
   SEAT_WATCH: "Sep 12,Sep 13,Sep 16"   # dates the user could attend
   START_OFFSET: "100"
   STATE_FILE: "state2.json"
-  MAX_POLLS: "70"          # 70 x 5 min = 5h50m
+  MAX_POLLS: "60"          # 70 x 5 min = 5h50m
 
 jobs:
   watch:
@@ -60,8 +60,8 @@ jobs:
             STATE_FILE="$STATE_FILE" python3 watcher.py || true
             # push state after every poll so a killed run never loses what it saw
             SEAT_SNAP="${STATE_FILE%.json}_seats.json"
-            if ! git diff --quiet "$STATE_FILE" "$SEAT_SNAP" 2>/dev/null; then
-              git add -- "$STATE_FILE" "$SEAT_SNAP" || true
+            if [ -n "$(git status --porcelain "$STATE_FILE" "$SEAT_SNAP")" ]; then
+              git add -A -- "$STATE_FILE" "$SEAT_SNAP" || true
               git commit -q -m "update state [skip ci]" || true
               git pull -q --rebase || true
               git push -q || true

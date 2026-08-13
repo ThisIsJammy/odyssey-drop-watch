@@ -36,11 +36,33 @@ STATUS = {}
 NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "15"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 
+class AlertUndelivered(Exception):
+    """Raised when an alert could not be delivered; state must not advance."""
+
+
+def notify_retry(title, body, priority="urgent", tries=3):
+    """Deliver or raise AlertUndelivered. Used for alerts that must not be lost:
+    an ntfy blip during a real drop used to be swallowed while state advanced,
+    losing the drop permanently."""
+    last = None
+    for i in range(tries):
+        try:
+            notify(title, body, priority)
+            return
+        except Exception as e:
+            last = e
+            print(f"  notify attempt {i+1}/{tries} failed: {e}")
+            if i < tries - 1:
+                time.sleep(5)
+    raise AlertUndelivered(str(last))
+
+
 def notify(title, body, priority="urgent"):
     req = urllib.request.Request(
         f"https://ntfy.sh/{TOPIC}",
         data=body.encode(),
-        headers={"Title": title, "Priority": priority, "Tags": "rotating_light,clapper",
+        headers={"Title": title.encode("ascii", "ignore").decode(),
+                 "Priority": priority, "Tags": "rotating_light,clapper",
                  "Click": PAGE},
         method="POST")
     urllib.request.urlopen(req, timeout=15)
@@ -73,10 +95,10 @@ def alarm(title, body):
     sig = "[drop:" + hashlib.sha1(body.encode()).hexdigest()[:8] + "]"
     if _nag_already_running(sig):
         print(f"repeat-alarm already running elsewhere for {sig} - single push only")
-        notify(title, body)
+        notify_retry(title, f"{body}\n{sig}")
         return
     reps = max(1, (NAG_MINUTES * 60) // NAG_INTERVAL) if NAG_MINUTES else 1
-    notify(title, f"{body}\n{sig} alert 1/{reps}")
+    notify_retry(title, f"{body}\n{sig} alert 1/{reps}")
 
     for n in range(2, reps + 1):
         time.sleep(NAG_INTERVAL)
@@ -142,7 +164,27 @@ def fetch_calendar():
                 time.sleep(20)
     raise last_err
 
+def write_json(path, payload):
+    """Atomic write: a killed runner must not leave half-written JSON that
+    silently re-baselines (and thereby swallows a real drop)."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=1, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def main():
+    try:
+        _main()
+    except AlertUndelivered as e:
+        print(f"ALERT DELIVERY FAILED ({e}) - state left unchanged, will retry "
+              f"next poll", file=sys.stderr)
+        sys.exit(1)
+
+
+def _main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     if not TOPIC:
         print(f"[{now}] ERROR: NTFY_TOPIC secret not set", file=sys.stderr)
@@ -167,8 +209,7 @@ def main():
             old = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    with open(STATE, "w") as f:
-        json.dump(flat, f, indent=1, sort_keys=True)
+    # state is written at the end, only once alerts have been delivered
     seat_path = STATE.replace(".json", "_seats.json")
     seat_prev = {}
     if os.path.exists(seat_path):
@@ -176,8 +217,11 @@ def main():
             seat_prev = json.load(open(seat_path))
         except json.JSONDecodeError:
             pass
-    with open(seat_path, "w") as f:
-        json.dump(seat_now, f, indent=1, sort_keys=True)
+
+    def persist():
+        write_json(STATE, flat)
+        write_json(seat_path, seat_now)
+
     if seat_prev:
         opened = [k for k, v in seat_now.items()
                   if v == "tickets" and seat_prev.get(k) not in (None, "tickets")]
@@ -192,10 +236,26 @@ def main():
                   "status has lagged reality before.")
             print(f"seat-availability alert: {opened}")
     if old is None:
+        persist()
         print(f"[{now}] baseline seeded: "
               + ", ".join(f"{t}={len(d)}" for t, d in cal.items()) + " showtimes. No alert.")
         return
     new_keys = [k for k in flat if k not in old]
+    vanished = [k for k in old if k not in flat]
+    # A genuine release ADDS showtimes; almost nothing disappears at the same
+    # moment. Simultaneous mass appearance AND disappearance is the fingerprint
+    # of an upstream relabel (e.g. "Sat, Sep 12" -> "Saturday Sep 12"), which
+    # would otherwise fire an urgent alarm for ~130 imaginary showtimes.
+    if len(new_keys) > 6 and len(vanished) > 6:
+        msg = (f"{len(new_keys)} keys appeared and {len(vanished)} vanished in "
+               f"one poll - that is a relabel/degraded page, not a drop. "
+               f"Not alerting; parser needs checking.")
+        print(msg, file=sys.stderr)
+        try:
+            notify("AMC watcher needs attention", msg, "default")
+        except Exception:
+            pass
+        return          # deliberately NOT persisting: keep the old baseline
     ls_new = [k for k in new_keys if k.startswith(ALERT_THEATER)]
     if ls_new:
         lines = []
@@ -209,6 +269,7 @@ def main():
     if other_new:
         notify("Other 70mm venue added showtimes", "\n".join(sorted(other_new)), "default")
         print(f"[{now}] info: other venues added {other_new}")
+    persist()
     gone = [k for k in old if k not in flat]
     if gone:
         print(f"[{now}] note: {len(gone)} showtime(s) disappeared: {sorted(gone)[:6]}")

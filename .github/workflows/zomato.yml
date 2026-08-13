@@ -20,7 +20,7 @@ concurrency:
 
 env:
   POLL_SECONDS: "180"      # delivery windows can be short - check every 3 min
-  MAX_POLLS: "116"         # 116 x 3 min = 5h48m
+  MAX_POLLS: "100"         # 116 x 3 min = 5h48m
   NAG_MINUTES: "15"
   NAG_INTERVAL: "60"
   WINDOW_START: "11:15"    # IST - user says outlet runs 11:30-22:30
@@ -48,8 +48,11 @@ jobs:
             python3 zomato_watcher.py || true
             # commit the open/close history as it accrues - that log is what
             # reveals when this restaurant actually opens
-            if ! git diff --quiet zomato_state.json zomato_history.jsonl 2>/dev/null; then
-              git add -- zomato_state.json zomato_history.jsonl || true
+            # `git diff --quiet` ignores untracked files and `git add` fails
+            # wholesale if any pathspec is missing - together those silently
+            # stopped state ever being committed. Use porcelain instead.
+            if [ -n "$(git status --porcelain zomato_state.json zomato_history.jsonl)" ]; then
+              git add -A -- zomato_state.json zomato_history.jsonl || true
               git commit -q -m "zomato status [skip ci]" || true
               git pull -q --rebase || true
               git push -q || true
