@@ -1,11 +1,11 @@
 {
  "canary_open": true,
- "checked": "2026-08-13T12:05:19.016304+05:30",
- "eta": "",
- "isServiceable": false,
+ "checked": "2026-08-13T12:08:23.566552+05:30",
+ "eta": "74 min",
+ "isServiceable": true,
  "last_problem_alert": null,
  "name": "Burger King",
- "ordering_open": false,
+ "ordering_open": true,
  "res_status": "Open now",
  "timing": "12noon \u2013 10:45pm (Today)"
 }
