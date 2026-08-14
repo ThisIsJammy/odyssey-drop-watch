@@ -27,13 +27,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  POLL_SECONDS: "300"
+  CUTOFF_UTC: "2026-09-19T06:00:00Z"   # stop after the trip window
+  POLL_SECONDS: "600"
   NAG_MINUTES: "15"     # a drop re-alerts every minute for 15 min
   NAG_INTERVAL: "60"
   SEAT_WATCH: "Sep 12,Sep 13,Sep 14,Sep 15,Sep 16,Sep 17,Sep 18"   # trip window Sep 12-18
   START_OFFSET: "0"
   STATE_FILE: "state.json"
-  MAX_POLLS: "60"          # 60 x 5 min = 5h00m
+  MAX_POLLS: "30"          # 30 x 10 min = 5h00m
 
 jobs:
   watch:
@@ -52,16 +53,25 @@ jobs:
           # align to a fixed slot within each 5-min window so the stagger
           # survives restarts (ad-hoc restarts had collapsed it, which let two
           # pollers raise duplicate alarms for the same event)
-          sleep $(( (300 + START_OFFSET - $(date +%s) % 300) % 300 ))
+          sleep $(( (600 + START_OFFSET - $(date +%s) % 600) % 600 ))
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           for i in $(seq 1 "$MAX_POLLS"); do
+            if [ "$(date -u +%s)" -ge "$(date -u -d "$CUTOFF_UTC" +%s)" ]; then
+              echo "past CUTOFF_UTC ($CUTOFF_UTC) - stopping"; exit 0
+            fi
             echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
             STATE_FILE="$STATE_FILE" python3 watcher.py || true
             # push state after every poll so a killed run never loses what it saw
             SEAT_SNAP="${STATE_FILE%.json}_seats.json"
-            if [ -n "$(git status --porcelain "$STATE_FILE" "$SEAT_SNAP")" ]; then
-              git add -A -- "$STATE_FILE" "$SEAT_SNAP" || true
+            HEARTBEAT="${STATE_FILE%.json}_heartbeat.json"
+            # commit the heartbeat every 3rd poll (~15 min) so an external
+            # watchdog can prove polling is really happening, without a commit
+            # every 5 minutes
+            HB_ARG=""
+            if [ $(( i % 3 )) -eq 0 ]; then HB_ARG="$HEARTBEAT"; fi
+            if [ -n "$(git status --porcelain "$STATE_FILE" "$SEAT_SNAP" $HB_ARG)" ]; then
+              git add -A -- "$STATE_FILE" "$SEAT_SNAP" $HB_ARG || true
               git commit -q -m "update state [skip ci]" || true
               for attempt in 1 2 3; do
                 git rebase --abort 2>/dev/null || true
@@ -74,6 +84,6 @@ jobs:
             # and would otherwise shift phase permanently, collapsing the
             # stagger the cross-poller dedupe depends on
             if [ "$i" -lt "$MAX_POLLS" ]; then
-              sleep $(( (300 + START_OFFSET - $(date +%s) % 300) % 300 ))
+              sleep $(( (600 + START_OFFSET - $(date +%s) % 600) % 600 ))
             fi
           done

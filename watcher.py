@@ -192,6 +192,8 @@ SHOW_YEAR = int(os.environ.get("SHOW_YEAR", "2026"))
 # opened. Two-poll hysteresis is not enough on its own - each flap outlives it.
 SEAT_COOLDOWN_H = float(os.environ.get("SEAT_COOLDOWN_H", "8"))
 LEDGER = {}          # cooldown ledger, written by persist() on every path
+FRESHNESS = {}       # venue -> upstream lastCheckedAt, to detect a frozen feed
+STALE_MIN = float(os.environ.get("STALE_MIN", "45"))
 ET = timezone(timedelta(hours=-4))       # venue-local; DST-exact is not needed
 
 
@@ -273,6 +275,7 @@ def _main():
         sys.exit(1)
 
     flat = {f"{t}|{k}": v for t, d in cal.items() for k, v in d.items()}
+    _hb_written = False
     seat_now = {k: STATUS.get(k) for k in flat
                 if k.startswith(ALERT_THEATER) and any(d in k for d in SEAT_WATCH)}
     seat_path = STATE.replace(".json", "_seats.json")
@@ -301,6 +304,22 @@ def _main():
         pass
     except Exception as e:
         print(f"  seat snapshot unreadable ({e})")
+
+    def heartbeat(ok=True, note=""):
+        """Proof that a poll actually completed, for the external watchdog."""
+        try:
+            hb = STATE.replace(".json", "_heartbeat.json")
+            prev_n = 0
+            if os.path.exists(hb):
+                try:
+                    prev_n = int(json.load(open(hb)).get("polls", 0))
+                except Exception:
+                    pass
+            write_json(hb, {"at": datetime.now(timezone.utc).isoformat(),
+                            "ok": ok, "polls": prev_n + 1, "note": note,
+                            "showtimes": len(flat), "poller": os.path.basename(STATE)})
+        except Exception as e:
+            print(f"  heartbeat write failed: {e}")
 
     def persist():
         write_json(STATE, flat)
@@ -384,7 +403,7 @@ def _main():
             # late, but never silent: if any of the adopted keys are real new
             # showtimes, the user still needs to hear about them
             lines = [f"{k.split('|')[1]} {k.split('|')[2]} -> "
-                     f"amctheatres.com/showtimes/{flat[k]}/seats"
+                     f"https://www.amctheatres.com/showtimes/{flat[k]}/seats"
                      for k in sorted(adopt_ls)]
             alarm(f"POSSIBLE DROP (after a page reshape): {len(adopt_ls)} showtime(s)",
                   cap(lines, "\n\nThe page changed shape, so this may be a relabel "
@@ -399,7 +418,7 @@ def _main():
         for k in sorted(ls_new):
             parts = k.split("|")
             lines.append(f"{parts[1]} {parts[2]} -> "
-                         f"amctheatres.com/showtimes/{flat[k]}/seats")
+                         f"https://www.amctheatres.com/showtimes/{flat[k]}/seats")
         alarm(f"LINCOLN SQUARE DROP: {len(ls_new)} new showtime(s)!",
               cap(lines, "\n\nBUY NOW - 80% sells in the first hour."),
               sig_key="drop:" + ",".join(sorted(flat[k] for k in ls_new)))
@@ -424,8 +443,12 @@ def _main():
     pending = {k for k, v in seat_prev.items() if v == "__pending__"}
     confirmed, now_pending = [], {}
     for k, v in seat_now.items():
-        was = seat_prev.get(k)
-        if v == "tickets" and was not in (None, "tickets", "__pending__"):
+        # distinguish "never seen" (key absent) from "seen as SOLD OUT" (None).
+        # The tracker encodes sold-out as availabilityStatus null, and treating
+        # that as "no prior reading" meant a sold-out show reopening NEVER
+        # alerted - the one transition that actually gets a ticket.
+        was = seat_prev.get(k, "__unseen__")
+        if v == "tickets" and was not in ("__unseen__", "tickets", "__pending__"):
             now_pending[k] = "__pending__"          # first sighting: wait one poll
         elif v == "tickets" and k in pending:
             if in_cooldown(k):
@@ -435,7 +458,7 @@ def _main():
                 confirmed.append(k)
     if confirmed:
         lines = [f"{k.split('|')[1]} {k.split('|')[2]} -> "
-                 f"amctheatres.com/showtimes/{flat[k]}/seats"
+                 f"https://www.amctheatres.com/showtimes/{flat[k]}/seats"
                  for k in sorted(confirmed)]
         dates = sorted({k.split("|")[1] for k in confirmed})
         alarm(f"SEATS MAY HAVE OPENED: {', '.join(dates)} "
