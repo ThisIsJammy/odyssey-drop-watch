@@ -316,6 +316,17 @@ def _main():
 
     prev_ls = sum(1 for k in old if k.startswith(ALERT_THEATER))
     cur_ls = sum(1 for k in flat if k.startswith(ALERT_THEATER))
+    if prev_ls > 0 and cur_ls == 0:
+        # say it out loud, once: silence from here on is not ambiguous
+        try:
+            notify(f"{ALERT_THEATER}: no showtimes left",
+                   f"The last {ALERT_THEATER} showtime has gone from the "
+                   f"listing (other venues still listed). The run appears to "
+                   f"have ended - so silence from now on means there is "
+                   f"nothing left to watch, not that seats are unavailable.",
+                   "default")
+        except Exception as e:
+            print(f"  run-ended note failed: {e}")
     if prev_ls >= 8 and cur_ls * 2 < prev_ls:
         # Lost more than half of a healthy Lincoln Square listing in one poll.
         # Roll-off is 1-2 per poll, so this is a truncated render, not reality.
