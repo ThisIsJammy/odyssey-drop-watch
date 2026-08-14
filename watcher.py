@@ -187,6 +187,10 @@ def fetch_calendar():
     raise last_err
 
 SHOW_YEAR = int(os.environ.get("SHOW_YEAR", "2026"))
+# The tracker's availability flaps: one Sep 16 showtime changed status 17 times
+# in 30 snapshots, producing 37 pushes overnight for a seat that never really
+# opened. Two-poll hysteresis is not enough on its own - each flap outlives it.
+SEAT_COOLDOWN_H = float(os.environ.get("SEAT_COOLDOWN_H", "8"))
 ET = timezone(timedelta(hours=-4))       # venue-local; DST-exact is not needed
 
 
@@ -383,6 +387,17 @@ def _main():
     # --- then seat flips, with hysteresis: the tracker's status flaps between
     # wheelchairOnly and tickets many times a day, which produced false alarm
     # storms. Require the same 'tickets' reading on two consecutive polls. ---
+    alerted = seat_prev.get("__alerted__") or {}      # showtime -> last alert iso
+    if not isinstance(alerted, dict):
+        alerted = {}
+
+    def in_cooldown(k):
+        try:
+            last = datetime.fromisoformat(alerted[k])
+        except Exception:
+            return False
+        return (datetime.now(timezone.utc) - last).total_seconds() < SEAT_COOLDOWN_H * 3600
+
     pending = {k for k, v in seat_prev.items() if v == "__pending__"}
     confirmed, now_pending = [], {}
     for k, v in seat_now.items():
@@ -390,7 +405,11 @@ def _main():
         if v == "tickets" and was not in (None, "tickets", "__pending__"):
             now_pending[k] = "__pending__"          # first sighting: wait one poll
         elif v == "tickets" and k in pending:
-            confirmed.append(k)
+            if in_cooldown(k):
+                print(f"  {k.split('|', 1)[1]} on sale again but alerted within "
+                      f"{SEAT_COOLDOWN_H}h - suppressed (tracker flaps)")
+            else:
+                confirmed.append(k)
     if confirmed:
         lines = [f"{k.split('|')[1]} {k.split('|')[2]} -> "
                  f"amctheatres.com/showtimes/{flat[k]}/seats"
@@ -400,8 +419,13 @@ def _main():
               f"({len(confirmed)} showtime(s))",
               cap(lines, "\n\nOn sale for two polls running. VERIFY ON AMC."),
               sig_key="seats:" + ",".join(sorted(flat[k] for k in confirmed)))
+        for k in confirmed:
+            alerted[k] = datetime.now(timezone.utc).isoformat()
         print(f"[{now}] seat alert: {confirmed}")
     seat_now.update(now_pending)     # remember first sightings for the next poll
+    if alerted:
+        # keep the cooldown ledger alongside the snapshot so it survives runs
+        seat_now["__alerted__"] = {k: v for k, v in alerted.items() if k in flat}
 
     other_new = [k for k in new_keys if not k.startswith(ALERT_THEATER)]
     if other_new:
