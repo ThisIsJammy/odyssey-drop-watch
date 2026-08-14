@@ -191,6 +191,7 @@ SHOW_YEAR = int(os.environ.get("SHOW_YEAR", "2026"))
 # in 30 snapshots, producing 37 pushes overnight for a seat that never really
 # opened. Two-poll hysteresis is not enough on its own - each flap outlives it.
 SEAT_COOLDOWN_H = float(os.environ.get("SEAT_COOLDOWN_H", "8"))
+LEDGER = {}          # cooldown ledger, written by persist() on every path
 ET = timezone(timedelta(hours=-4))       # venue-local; DST-exact is not needed
 
 
@@ -303,7 +304,14 @@ def _main():
 
     def persist():
         write_json(STATE, flat)
-        write_json(seat_path, seat_now)
+        seat_out = dict(seat_now)
+        led = LEDGER.get("alerted") or {}
+        if led:
+            # keep entries for anything still upcoming, not just what is in this
+            # render: a showtime blinking out for one poll used to drop its
+            # cooldown and let the flap storm restart
+            seat_out["__alerted__"] = {k: v for k, v in led.items() if is_future(k)}
+        write_json(seat_path, seat_out)
         if os.path.exists(guard_marker):
             os.remove(guard_marker)
 
@@ -316,17 +324,6 @@ def _main():
 
     prev_ls = sum(1 for k in old if k.startswith(ALERT_THEATER))
     cur_ls = sum(1 for k in flat if k.startswith(ALERT_THEATER))
-    if prev_ls > 0 and cur_ls == 0:
-        # say it out loud, once: silence from here on is not ambiguous
-        try:
-            notify(f"{ALERT_THEATER}: no showtimes left",
-                   f"The last {ALERT_THEATER} showtime has gone from the "
-                   f"listing (other venues still listed). The run appears to "
-                   f"have ended - so silence from now on means there is "
-                   f"nothing left to watch, not that seats are unavailable.",
-                   "default")
-        except Exception as e:
-            print(f"  run-ended note failed: {e}")
     if prev_ls >= 8 and cur_ls * 2 < prev_ls:
         # Lost more than half of a healthy Lincoln Square listing in one poll.
         # Roll-off is 1-2 per poll, so this is a truncated render, not reality.
@@ -335,6 +332,19 @@ def _main():
                       f"in one poll - treating as a partial page render, not a "
                       f"real change. Not updating state.")
         return
+
+    if prev_ls > 0 and cur_ls == 0:
+        # only reachable once the partial-render guard above has cleared it, so
+        # this really is an empty listing rather than a truncated page
+        try:
+            notify_retry(f"{ALERT_THEATER}: no showtimes left",
+                         f"The last {ALERT_THEATER} showtime has gone from the "
+                         f"listing while other venues are still listed. The run "
+                         f"appears to have ended, so silence from here means "
+                         f"there is nothing left to watch.", "default")
+        except AlertUndelivered as e:
+            print(f"  run-ended note undelivered ({e}) - will retry next poll")
+            return          # do not persist: retry rather than lose it
 
     new_keys = [k for k in flat if k not in old]
     vanished = [k for k in old if k not in flat]
@@ -401,13 +411,15 @@ def _main():
     alerted = seat_prev.get("__alerted__") or {}      # showtime -> last alert iso
     if not isinstance(alerted, dict):
         alerted = {}
+    LEDGER["alerted"] = alerted      # persist() owns writing it back
 
     def in_cooldown(k):
         try:
             last = datetime.fromisoformat(alerted[k])
+            return (datetime.now(timezone.utc) - last).total_seconds() \
+                < SEAT_COOLDOWN_H * 3600
         except Exception:
-            return False
-        return (datetime.now(timezone.utc) - last).total_seconds() < SEAT_COOLDOWN_H * 3600
+            return False        # fail OPEN: a bad ledger entry must not mute us
 
     pending = {k for k, v in seat_prev.items() if v == "__pending__"}
     confirmed, now_pending = [], {}
@@ -434,9 +446,6 @@ def _main():
             alerted[k] = datetime.now(timezone.utc).isoformat()
         print(f"[{now}] seat alert: {confirmed}")
     seat_now.update(now_pending)     # remember first sightings for the next poll
-    if alerted:
-        # keep the cooldown ledger alongside the snapshot so it survives runs
-        seat_now["__alerted__"] = {k: v for k, v in alerted.items() if k in flat}
 
     other_new = [k for k in new_keys if not k.startswith(ALERT_THEATER)]
     if other_new:
@@ -451,7 +460,7 @@ def _main():
         print(f"[{now}] note: {len(vanished)} showtime(s) rolled off")
     if not new_keys and not vanished and not confirmed:
         print(f"[{now}] no change ({len(flat)} showtimes tracked, "
-              f"{len(seat_now)} seats watched)")
+              f"{sum(1 for k in seat_now if not k.startswith('__'))} seats watched)")
 
 if __name__ == "__main__":
     main()
