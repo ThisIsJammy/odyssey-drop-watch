@@ -4,7 +4,7 @@
  "Lincoln Square|Sat, Sep 12|2:00 PM": "wheelchairOnly",
  "Lincoln Square|Sat, Sep 12|6:00 PM": "wheelchairOnly",
  "Lincoln Square|Sun, Sep 13|10:00 AM": "wheelchairOnly",
- "Lincoln Square|Sun, Sep 13|10:00 PM": "__pending__",
+ "Lincoln Square|Sun, Sep 13|10:00 PM": "tickets",
  "Lincoln Square|Sun, Sep 13|2:00 PM": "wheelchairOnly",
  "Lincoln Square|Sun, Sep 13|6:00 PM": null,
  "Lincoln Square|Wed, Sep 16|10:00 AM": "wheelchairOnly",
@@ -12,6 +12,7 @@
  "Lincoln Square|Wed, Sep 16|2:00 PM": "wheelchairOnly",
  "Lincoln Square|Wed, Sep 16|6:00 PM": "wheelchairOnly",
  "__alerted__": {
-  "Lincoln Square|Sun, Sep 13|10:00 AM": "2026-08-14T17:43:20.979678+00:00"
+  "Lincoln Square|Sun, Sep 13|10:00 AM": "2026-08-14T17:43:20.979678+00:00",
+  "Lincoln Square|Sun, Sep 13|10:00 PM": "2026-08-15T10:57:24.993206+00:00"
  }
 }
