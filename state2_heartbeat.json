@@ -1,8 +1,8 @@
 {
- "at": "2026-08-16T13:51:41.227015+00:00",
+ "at": "2026-08-16T14:21:41.175632+00:00",
  "note": "fetched",
  "ok": true,
  "poller": "state2.json",
- "polls": 3,
- "showtimes": 372
+ "polls": 6,
+ "showtimes": 370
 }
