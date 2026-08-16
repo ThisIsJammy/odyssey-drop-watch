@@ -149,6 +149,13 @@ def parse_calendar(raw):
     if end is None:
         raise RuntimeError("sections array unterminated")
     sections = json.loads(text[start:end])
+    # A frozen upstream renders a perfect page: every guard passes and we would
+    # report "no change" forever. Their own lastCheckedAt exposes it.
+    FRESHNESS.clear()
+    for _sec in sections:
+        _v = _sec.get("venue") or {}
+        if _v.get("lastCheckedAt"):
+            FRESHNESS[_v.get("shortName", "?")] = _v["lastCheckedAt"]
     STATUS.clear()
     cal = {}
     for sec in sections:
@@ -338,6 +345,21 @@ def _main():
     # fails, because the workflow invokes this script with `|| true`, so run
     # status alone tells the watchdog nothing.
     heartbeat(True, "fetched")
+
+    _lc = FRESHNESS.get(ALERT_THEATER)
+    if _lc:
+        try:
+            _age = (datetime.now(timezone.utc) - datetime.fromisoformat(
+                _lc.replace("Z", "+00:00"))).total_seconds() / 60
+            if _age > STALE_MIN:
+                report_broken(f"the tracker's own data for {ALERT_THEATER} is "
+                              f"{_age:.0f} min old (it normally refreshes every "
+                              f"~2 min) - its scraper looks stalled, so 'no "
+                              f"change' right now proves nothing")
+            else:
+                print(f"  upstream data {_age:.0f} min old (fresh)")
+        except Exception as e:
+            print(f"  freshness check skipped: {e}")
 
     if old is None:
         persist()
