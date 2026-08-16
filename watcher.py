@@ -334,6 +334,11 @@ def _main():
         if os.path.exists(guard_marker):
             os.remove(guard_marker)
 
+    # Proof a poll really completed. A run can stay green while every poll
+    # fails, because the workflow invokes this script with `|| true`, so run
+    # status alone tells the watchdog nothing.
+    heartbeat(True, "fetched")
+
     if old is None:
         persist()
         print(f"[{now}] baseline seeded: "
