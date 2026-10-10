@@ -1,0 +1,23 @@
+name: probe-403
+on: { workflow_dispatch: {} }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: What kind of 403 is this?
+        run: |
+          echo "runner public IP + geo:"
+          curl -s -m 15 https://ipinfo.io/json || true
+          echo
+          for u in "https://www.district.in/movies/jailer-2-movie-tickets-in-pune-MV187766" \
+                   "https://www.zomato.com/pune/burger-king-koregaon-park/order" \
+                   "https://api3.pvrcinemas.com/api/v1/booking/content/city"; do
+            echo "=================== $u"
+            curl -s -m 25 -D - -o /tmp/b.html \
+              -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              -H "Accept-Language: en-IN,en-US;q=0.9,en;q=0.8" \
+              -H "Accept-Encoding: gzip, deflate, br" \
+              "$u" | head -20
+            echo "--- body first 300 bytes ---"; head -c 300 /tmp/b.html; echo; echo
+          done
