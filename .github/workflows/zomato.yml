@@ -7,8 +7,8 @@ name: zomato-delivery-watch
 
 on:
   schedule:
-    # 11:15-22:45 IST = 05:45-17:15 UTC (watcher also gates per-poll)
-    - cron: "*/5 5-17 * * *"
+    # 11:15-23:30 IST = 05:45-18:00 UTC (watcher also gates per-poll)
+    - cron: "*/5 5-18 * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ env:
   NAG_MINUTES: "15"
   NAG_INTERVAL: "60"
   WINDOW_START: "11:15"    # IST - user says outlet runs 11:30-22:30
-  WINDOW_END: "22:45"
+  WINDOW_END: "23:30"      # outlet now listed to 11:45pm, so watch later
 
 jobs:
   watch:

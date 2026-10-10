@@ -42,7 +42,7 @@ NAG_MINUTES = int(os.environ.get("NAG_MINUTES", "10"))
 MAX_NAG_MINUTES = int(os.environ.get("MAX_NAG_MINUTES", "40"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 WINDOW_START = os.environ.get("WINDOW_START", "11:15")   # IST, inclusive
-WINDOW_END = os.environ.get("WINDOW_END", "22:45")       # IST, exclusive
+WINDOW_END = os.environ.get("WINDOW_END", "23:30")       # IST, exclusive
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, os.environ.get("STATE_FILE", "zomato_state.json"))
 HISTORY = os.path.join(HERE, "zomato_history.jsonl")
@@ -201,7 +201,13 @@ def fetch_one(url):
         od = blob.get("orderDetails") or {}
         if "isServiceable" in od:
             bi = (blob.get("sections") or {}).get("SECTION_BASIC_INFO") or {}
-            return (not ui_closed, bool(od["isServiceable"]),
+            # 2026-10-10: Zomato stopped RENDERING the closed sentence --
+            # it now ships only as a langKeys template on every page, open or
+            # closed, so `not ui_closed` alone reads "open" for a shut
+            # restaurant. Require BOTH signals to agree before calling it open;
+            # if the rendered sentence ever comes back it acts as an extra veto.
+            return ((not ui_closed) and bool(od["isServiceable"]),
+                    bool(od["isServiceable"]),
                     od.get("deliveryTime") or "", bi.get("name") or f"res {rid}",
                     bi.get("res_status_text") or "",
                     (bi.get("timing") or {}).get("timing_desc") or "")
