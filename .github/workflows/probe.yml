@@ -4,29 +4,21 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Which Indian ticketing hosts serve a cloud IP?
+      - name: Find a Pune movie source reachable from a cloud IP
         run: |
           UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
           probe () {
-            code=$(curl -s -m 20 -o /tmp/o -D /tmp/h -w '%{http_code}' \
-              -H "User-Agent: $UA" -H "Accept: text/html,application/json,*/*" \
-              -H "Accept-Language: en-IN,en;q=0.9" "$1" 2>/dev/null || echo ERR)
-            srv=$(grep -i '^server:' /tmp/h | head -1 | tr -d '\r' | cut -c1-28)
-            sz=$(wc -c < /tmp/o)
-            printf '%-7s %-9s %-30s %s\n' "$code" "$sz" "$srv" "$1"
+            curl -s -m 25 -L -o /tmp/o -w "%{http_code} %{size_download} %{url_effective}\n" \
+              -H "User-Agent: $UA" -H "Accept-Language: en-IN,en;q=0.9" "$1" 2>/dev/null
+            echo "        jailer=$(grep -oic jailer /tmp/o) pune=$(grep -oic pune /tmp/o) showDates=$(grep -oc 'showDates' /tmp/o)"
           }
-          echo "CODE    SIZE      SERVER                         URL"
-          probe "https://www.district.in/movies/jailer-2-movie-tickets-in-pune-MV187766"
-          probe "https://district.in/movies/jailer-2-movie-tickets-in-pune-MV187766"
-          probe "https://api.district.in/"
-          probe "https://www.zomato.com/pune/burger-king-koregaon-park/order"
-          probe "https://api3.pvrcinemas.com/api/v1/booking/content/city"
-          probe "https://www.pvrcinemas.com/"
-          probe "https://www.inoxmovies.com/"
-          probe "https://cinemas.bookmyshow.com/"
-          probe "https://www.cinepolisindia.com/"
-          probe "https://citypridecinemas.com/"
-          probe "https://www.ticketnew.com/"
-          probe "https://in.bookmyshow.com/explore/movies-pune"
-          probe "https://www.moviemax.in/"
-          probe "https://www.miraj.cinemas/"
+          for u in \
+            "https://www.zomato.com/movies" \
+            "https://www.zomato.com/pune/movies" \
+            "https://www.zomato.com/movies/jailer-2-movie-tickets-in-pune-MV187766" \
+            "https://www.moviemax.in/" \
+            "https://www.ticketnew.com/" \
+            "https://www.ticketnew.com/movies-in-pune" \
+            "https://paytm.com/movies/pune" ; do
+            echo "=== $u"; probe "$u"
+          done
