@@ -1,0 +1,50 @@
+name: jailer2-pune-watch
+
+# Alerts when Jailer 2 bookings open in Pune. Advance booking for a
+# Rajinikanth release can drop at any hour (often just after midnight IST),
+# so unlike the Zomato watcher this one has NO daily window - it runs 24/7
+# until the cutoff in the script. Same long-poller shape as the others:
+# GitHub throttles */5 schedules badly, so each run polls on its own timer.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: jailer
+  cancel-in-progress: false
+
+env:
+  POLL_SECONDS: "180"      # 3 min
+  MAX_POLLS: "116"         # 116 x 3 min = 5h48m
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Poll District + PVR for Jailer 2 Pune
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC_JAILER }}
+          POLL_SECONDS: ${{ env.POLL_SECONDS }}
+          MAX_POLLS: ${{ env.MAX_POLLS }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for i in $(seq 1 "$MAX_POLLS"); do
+            echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
+            MAX_POLLS=1 python3 jailer_watcher.py || true
+            if [ -n "$(git status --porcelain jailer_state.json jailer_history.jsonl)" ]; then
+              git add -A -- jailer_state.json jailer_history.jsonl || true
+              git commit -q -m "jailer status [skip ci]" || true
+              git pull -q --rebase || true
+              git push -q || true
+            fi
+            if [ "$i" -lt "$MAX_POLLS" ]; then sleep "$POLL_SECONDS"; fi
+          done
