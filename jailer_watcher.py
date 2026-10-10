@@ -59,6 +59,13 @@ PVR_HEADERS = {
     "Referer": "https://www.pvrcinemas.com/",
 }
 TITLE_RE = re.compile(r"JAILER", re.I)
+# Cinemas the user actually wants to book (asked 2026-10-10). Matched as a
+# case-insensitive substring of PVR's cinema name. PVR Market City Pune is
+# theatreId 375 = the "PVR Phoenix Market City" BMS link. MovieMax Gold
+# Mariplex (BMS venue MKML) is NOT trackable: MovieMax has no booking site of
+# its own (moviemax.co.in is an empty shell) and sells only through
+# in.bookmyshow.com, which is Cloudflare-blocked from every vantage point.
+PRIORITY_CINEMAS = ("Market City",)
 
 
 def now_ist():
@@ -160,8 +167,16 @@ def pvr_check():
             f"{len(films)} films) - refusing to report 'not open'")
     hits = {n: v for n, v in films.items() if TITLE_RE.search(n)}
     if hits:
-        parts = [f"{n} @ {len(v)} cinema(s)" for n, v in hits.items()]
-        return True, "; ".join(parts)
+        parts = []
+        for n, v in hits.items():
+            # star the cinemas the user wants, so the alert says whether THEIR
+            # theatre has it rather than just how many did
+            named = sorted(
+                ("* " + c if any(p.lower() in c.lower()
+                                 for p in PRIORITY_CINEMAS) else c)
+                for c in v)
+            parts.append(f"{n}: " + ", ".join(named))
+        return True, " | ".join(parts)
     return False, f"not in {len(films)} films across {len(cinemas)} cinemas"
 
 
