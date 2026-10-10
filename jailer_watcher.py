@@ -65,7 +65,7 @@ TITLE_RE = re.compile(r"JAILER", re.I)
 # Mariplex (BMS venue MKML) is NOT trackable: MovieMax has no booking site of
 # its own (moviemax.co.in is an empty shell) and sells only through
 # in.bookmyshow.com, which is Cloudflare-blocked from every vantage point.
-PRIORITY_CINEMAS = ("Market City",)
+PRIORITY_CINEMAS = ("Market City", "Mariplex")
 
 
 def now_ist():
@@ -128,19 +128,39 @@ def district_signal(url, expect_id=None):
     for m in re.finditer(r'"showDates"\s*:\s*\[(.*?)\]', flat, re.S):
         dates += re.findall(r'"(\d{4}-\d{2}-\d{2})"', m.group(1))
     blocks = len(re.findall(r'"arrangedSessions"\s*:\s*\[\s*\{', flat))
-    return len(set(dates)), blocks, sorted(set(dates))
+    # District lists every Pune chain, including ones with no site of their own
+    # (MovieMax Gold Mariplex sells only via BMS, which is unreadable) - so the
+    # venue names here are the only way to say WHERE it opened.
+    names = set()
+    for pat in (r'"venueName"\s*:\s*"([^"]{3,70})"',
+                r'"cinemaName"\s*:\s*"([^"]{3,70})"',
+                r'"name"\s*:\s*"([^"]{3,70})"'):
+        names |= set(re.findall(pat, flat))
+    cinemas = sorted(n for n in names if re.search(
+        r'pvr|inox|cinepolis|moviemax|city ?pride|miraj|rajhans|funsquare'
+        r'|carnival|mariplex|multiplex|cinema', n, re.I))
+    return len(set(dates)), blocks, sorted(set(dates)), cinemas
 
 
 def district_check():
     """(is_open, detail). Raises if the canary says we cannot read District."""
-    nd, nb, dates = district_signal(DISTRICT_URL, expect_id=MOVIE_ID)
-    cd, cb, _ = district_signal(DISTRICT_CANARY)
+    nd, nb, dates, cinemas = district_signal(DISTRICT_URL, expect_id=MOVIE_ID)
+    cd, cb, _, _ = district_signal(DISTRICT_CANARY)
     if cd == 0 and cb == 0:
         raise RuntimeError(
             "District canary has no showDates either - parser or layout "
             "broke; refusing to report 'not open'")
     if nd or nb:
-        return True, f"{nd} show dates {dates[:6]}, {nb} session blocks"
+        def is_mine(c):
+            return any(p.lower() in c.lower() for p in PRIORITY_CINEMAS)
+        # the user's own cinemas FIRST - the list is capped for ntfy, and
+        # alphabetical order would push them past the cut
+        ordered = sorted(cinemas, key=lambda c: (not is_mine(c), c.lower()))
+        named = [("* " + c if is_mine(c) else c) for c in ordered]
+        where = ("; ".join(named[:12]) if named else "cinemas not listed yet")
+        if len(named) > 12:
+            where += f" (+{len(named) - 12} more)"
+        return True, f"{nd} show dates {dates[:6]} | {where}"
     return False, f"no showDates (canary healthy: {cd} dates)"
 
 
