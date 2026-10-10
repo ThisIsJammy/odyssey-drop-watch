@@ -40,8 +40,14 @@ jobs:
           for i in $(seq 1 "$MAX_POLLS"); do
             echo "--- poll $i/$MAX_POLLS at $(date -u '+%H:%M:%S UTC') ---"
             MAX_POLLS=1 python3 jailer_watcher.py || true
-            if [ -n "$(git status --porcelain jailer_state.json jailer_history.jsonl)" ]; then
-              git add -A -- jailer_state.json jailer_history.jsonl || true
+            # add each path SEPARATELY: `git add -A -- a b` aborts wholesale
+            # if any pathspec is missing, and jailer_history.jsonl only exists
+            # once an alert has fired -- that silently stopped state ever
+            # being committed on the first deploy.
+            for f in jailer_state.json jailer_history.jsonl; do
+              [ -e "$f" ] && git add -- "$f" || true
+            done
+            if ! git diff --cached --quiet; then
               git commit -q -m "jailer status [skip ci]" || true
               git pull -q --rebase || true
               git push -q || true
