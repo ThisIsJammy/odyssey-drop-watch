@@ -29,3 +29,28 @@ online.
 
 **Best channel of all is first-party:** BookMyShow's own "Notify Me" on the
 Jailer 2 page, which needs no scraping and fires even with the Mac asleep.
+
+## Second attempt (same day): cloud routine + alternative sources — also dead
+
+Tried, after the GitHub Actions failure above:
+
+1. **Anthropic cloud routine** (`trig_01E4n5H8pW1XeJeiNpLfASPw`, hourly). Two
+   hard blocks: the auto-mode classifier refuses to execute code cloned from a
+   repo, and the sandbox's egress proxy `connect_rejected`s **every** host —
+   `district.in`, `ntfy.sh`, even `example.com`. It could not deliver an alert
+   even if it could read the page. Routine left disabled. Minimum routine
+   interval is also 1 hour.
+2. **Claude's own WebFetch** reads `www.district.in` fine from this session,
+   but is blocked outright for `in.bookmyshow.com` — so BMS is unreadable from
+   every vantage point tried (residential curl, cloud curl, Claude fetch).
+3. **Alternative cloud-reachable sources for the same signal** — none found.
+   From a runner: `zomato.com` is reachable but 404s on District movie paths
+   and serves no showtimes; `ticketnew.com` 403s; `paytm.com/movies` redirects
+   into the blocked `district.in`; `moviemax.in` returns 200 but is an SPA with
+   no Pune/Jailer content in the HTML.
+
+**Conclusion: no laptop-off, cloud-hosted route exists for this signal.** The
+only machines that can read it are ones on a residential Indian IP. Options
+that genuinely work: BookMyShow's first-party "Notify Me", any always-on
+device on the user's home connection (Pi, spare laptop, Android+Termux), or
+keeping the Mac awake.
