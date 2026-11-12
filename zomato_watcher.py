@@ -43,6 +43,7 @@ MAX_NAG_MINUTES = int(os.environ.get("MAX_NAG_MINUTES", "40"))
 NAG_INTERVAL = int(os.environ.get("NAG_INTERVAL", "60"))
 WINDOW_START = os.environ.get("WINDOW_START", "11:15")   # IST, inclusive
 WINDOW_END = os.environ.get("WINDOW_END", "23:30")       # IST, exclusive
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "1800"))   # older state = re-baseline
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(HERE, os.environ.get("STATE_FILE", "zomato_state.json"))
 HISTORY = os.path.join(HERE, "zomato_history.jsonl")
@@ -282,6 +283,15 @@ def main():
         sys.exit(1)
 
     canary = canary_open()
+    # A state saved long ago (watcher disabled, runner gap) is not "the previous
+    # poll". 2026-11-12: re-enabled after a month off, the first poll compared
+    # against 10 Oct's "open" and pushed a bogus "closed again". Stale -> re-baseline.
+    try:
+        age = (now_ist() - datetime.fromisoformat((prev_state or {})["checked"])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        age = None
+    if age is None or age > STALE_SECONDS:
+        prev_state = {"last_problem_alert": (prev_state or {}).get("last_problem_alert")}
     prev = (prev_state or {}).get("ordering_open")
     prev_status = (prev_state or {}).get("res_status")
     disagree = ordering_open != serviceable
